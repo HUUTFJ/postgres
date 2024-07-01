@@ -1054,16 +1054,20 @@ drop_existing_subscriptions(PGconn *conn, const char *subname)
 					  subname);
 	appendPQExpBuffer(query, " DROP SUBSCRIPTION %s;", subname);
 
-	res = PQexec(conn, query->data);
-
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	if (!dry_run)
 	{
-		pg_log_error("could not drop a subscription \"%s\" settings: %s",
-					 subname, PQresultErrorMessage(res));
-		disconnect_database(conn, true);
+		res = PQexec(conn, query->data);
+
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+		{
+			pg_log_error("could not drop a subscription \"%s\" settings: %s",
+						subname, PQresultErrorMessage(res));
+			disconnect_database(conn, true);
+		}
+
+		PQclear(res);
 	}
 
-	PQclear(res);
 	destroyPQExpBuffer(query);
 }
 
