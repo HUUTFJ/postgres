@@ -1075,15 +1075,18 @@ check_and_drop_existing_subscriptions(PGconn *conn,
 									  const struct LogicalRepInfo *dbinfo)
 {
 	PQExpBuffer query = createPQExpBuffer();
+	char 	   *dbname;
 	PGresult   *res;
 
 	Assert(conn != NULL);
 
+	dbname = PQescapeLiteral(conn, dbinfo->dbname, strlen(dbinfo->dbname));
+
 	appendPQExpBuffer(query,
 					  "SELECT s.subname FROM pg_catalog.pg_subscription s "
 					  "INNER JOIN pg_catalog.pg_database d ON (s.subdbid = d.oid) "
-					  "WHERE d.datname = '%s'",
-					  dbinfo->dbname);
+					  "WHERE d.datname = %s",
+					  dbname);
 	res = PQexec(conn, query->data);
 
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
