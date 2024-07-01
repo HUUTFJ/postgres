@@ -106,7 +106,8 @@ static void set_replication_progress(PGconn *conn, const struct LogicalRepInfo *
 static void enable_subscription(PGconn *conn, const struct LogicalRepInfo *dbinfo);
 static void check_and_drop_existing_subscriptions(PGconn *conn,
 												  const struct LogicalRepInfo *dbinfo);
-static void drop_existing_subscriptions(PGconn *conn, const char *subname);
+static void drop_existing_subscriptions(PGconn *conn, const char *subname,
+										const char *dbname);
 
 #define	USEC_PER_SEC	1000000
 #define	WAIT_INTERVAL	1		/* 1 second */
@@ -1037,7 +1038,7 @@ check_subscriber(const struct LogicalRepInfo *dbinfo)
  * node.
  */
 static void
-drop_existing_subscriptions(PGconn *conn, const char *subname)
+drop_existing_subscriptions(PGconn *conn, const char *subname, const char *dbname)
 {
 	PQExpBuffer query = createPQExpBuffer();
 	PGresult   *res;
@@ -1053,6 +1054,9 @@ drop_existing_subscriptions(PGconn *conn, const char *subname)
 	appendPQExpBuffer(query, " ALTER SUBSCRIPTION %s SET (slot_name = NONE);",
 					  subname);
 	appendPQExpBuffer(query, " DROP SUBSCRIPTION %s;", subname);
+
+	pg_log_info("dropping subscription \"%s\" on database \"%s\"",
+				subname, dbname);
 
 	if (!dry_run)
 	{
@@ -1101,7 +1105,8 @@ check_and_drop_existing_subscriptions(PGconn *conn,
 	}
 
 	for (int i = 0; i < PQntuples(res); i++)
-		drop_existing_subscriptions(conn, PQgetvalue(res, i, 0));
+		drop_existing_subscriptions(conn, PQgetvalue(res, i, 0),
+									dbinfo->dbname);
 
 	PQclear(res);
 	destroyPQExpBuffer(query);
