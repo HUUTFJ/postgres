@@ -1133,7 +1133,16 @@ apply_handle_prepare(StringInfo s)
 	CommitTransactionCommand();
 	pgstat_report_stat(false);
 
-	store_flush_position(prepare_data.end_lsn, XactLastCommitEnd);
+	/*
+	 * Here, we set InvalidXLogRecPtr as the last flushed WAL location because
+	 * we do not have a way to detect the actual value. Even when there are no
+	 * pending transactions while sending feedback so that all the received
+	 * changes are regarded as flushed, there is no risk that prepared
+	 * transactions are lost. Because prepared transactions have already been
+	 * flushed at the end of PREPARE applications. When a variable tracks the
+	 * last PREPARE record, we can use it as local_lsn.
+	 */
+	store_flush_position(prepare_data.end_lsn, InvalidXLogRecPtr);
 
 	in_remote_transaction = false;
 
@@ -1251,7 +1260,7 @@ apply_handle_rollback_prepared(StringInfo s)
 
 	pgstat_report_stat(false);
 
-	store_flush_position(rollback_data.rollback_end_lsn, XactLastCommitEnd);
+	store_flush_position(rollback_data.rollback_end_lsn, InvalidXLogRecPtr);
 	in_remote_transaction = false;
 
 	/* Process any tables that are being synchronized in parallel. */
@@ -1306,7 +1315,12 @@ apply_handle_stream_prepare(StringInfo s)
 
 			CommitTransactionCommand();
 
-			store_flush_position(prepare_data.end_lsn, XactLastCommitEnd);
+			/*
+			 * We set InvalidXLogRecPtr as the last flushed WAL location
+			 * because we do not have a way to detect the actual value. See
+			 * comments in apply_handle_prepare().
+			 */
+			store_flush_position(prepare_data.end_lsn, InvalidXLogRecPtr);
 
 			in_remote_transaction = false;
 
@@ -1364,7 +1378,11 @@ apply_handle_stream_prepare(StringInfo s)
 
 			CommitTransactionCommand();
 
-			MyParallelShared->last_commit_end = XactLastCommitEnd;
+			/*
+			 * InvalidXLogRecPtr as the last flushed WAL location. See comments
+			 * in apply_handle_prepare().
+			 */
+			MyParallelShared->last_commit_end = InvalidXLogRecPtr;
 
 			pa_set_xact_state(MyParallelShared, PARALLEL_TRANS_FINISHED);
 			pa_unlock_transaction(MyParallelShared->xid, AccessExclusiveLock);
