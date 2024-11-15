@@ -1479,6 +1479,7 @@ LPVOID
 LPWSTR
 LSEG
 LUID
+LVRelScanState
 LVRelState
 LVSavedErrInfo
 LWLock
