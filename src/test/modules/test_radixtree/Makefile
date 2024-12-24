@@ -3,7 +3,8 @@
 MODULE_big = test_radixtree
 OBJS = \
 	$(WIN32RES) \
-	test_radixtree.o
+	test_radixtree.o \
+	test_radixtree_parallel.o
 PGFILEDESC = "test_radixtree - test code for src/include/lib/radixtree.h"
 
 EXTENSION = test_radixtree

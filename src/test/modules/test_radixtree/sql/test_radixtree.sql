@@ -5,3 +5,5 @@ CREATE EXTENSION test_radixtree;
 -- an error if something fails.
 --
 SELECT test_radixtree();
+
+SELECT test_radixtree_parallel();

@@ -6,3 +6,7 @@
 CREATE FUNCTION test_radixtree()
 RETURNS pg_catalog.void STRICT
 AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_radixtree_parallel()
+RETURNS pg_catalog.void STRICT
+AS 'MODULE_PATHNAME' LANGUAGE C;

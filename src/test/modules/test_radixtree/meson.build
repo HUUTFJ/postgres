@@ -2,6 +2,7 @@
 
 test_radixtree_sources = files(
   'test_radixtree.c',
+  'test_radixtree_parallel.c',
 )
 
 if host_system == 'windows'
