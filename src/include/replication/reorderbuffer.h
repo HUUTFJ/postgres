@@ -422,6 +422,13 @@ typedef struct ReorderBufferTXN
 	 * Private data pointer of the output plugin.
 	 */
 	void	   *output_plugin_private;
+
+	/*
+	 * List of wal segments this txn is part of.
+	 *
+	 * XXX: check whether the attribute doesn't break ABI 
+	 */
+	List	*walsgmts;
 } ReorderBufferTXN;
 
 /* so we can define the callbacks used inside struct ReorderBuffer itself */
