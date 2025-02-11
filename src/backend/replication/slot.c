@@ -55,6 +55,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/builtins.h"
+#include "utils/injection_point.h"
 #include "utils/guc_hooks.h"
 #include "utils/varlena.h"
 
@@ -1670,16 +1671,26 @@ DetermineSlotInvalidationCause(uint32 possible_causes, ReplicationSlot *s,
 	{
 		Assert(now > 0);
 
-		/*
-		 * Check if the slot needs to be invalidated due to
-		 * idle_replication_slot_timeout GUC.
-		 */
-		if (CanInvalidateIdleSlot(s) &&
-			TimestampDifferenceExceedsSeconds(s->inactive_since, now,
-											  idle_replication_slot_timeout_mins * SECS_PER_MINUTE))
+		if (CanInvalidateIdleSlot(s))
 		{
-			*inactive_since = s->inactive_since;
-			return RS_INVAL_IDLE_TIMEOUT;
+			/*
+			 * Check if the slot needs to be invalidated due to
+			 * idle_replication_slot_timeout GUC.
+			 *
+			 * To test idle timeout slot invalidation, if the
+			 * "slot-timeout-inval" injection point is attached, immediately
+			 * invalidate the slot.
+			 */
+			if (
+#ifdef USE_INJECTION_POINTS
+				IS_INJECTION_POINT_ATTACHED("slot-timeout-inval") ||
+#endif
+				TimestampDifferenceExceedsSeconds(s->inactive_since, now,
+												  idle_replication_slot_timeout_mins * SECS_PER_MINUTE))
+			{
+				*inactive_since = s->inactive_since;
+				return RS_INVAL_IDLE_TIMEOUT;
+			}
 		}
 	}
 
