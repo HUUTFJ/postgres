@@ -2584,7 +2584,7 @@ GetSlotInvalidationCause(const char *cause_name)
 	Assert(cause_name);
 
 	/* Search lookup table for the cause having this name */
-	for (int i; i <= RS_INVAL_MAX_CAUSES; i++)
+	for (int i = 0; i <= RS_INVAL_MAX_CAUSES; i++)
 	{
 		if (strcmp(SlotInvalidationCauses[i].cause_name, cause_name) == 0)
 		{
