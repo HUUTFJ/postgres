@@ -2580,17 +2580,21 @@ RestoreSlotFromDisk(const char *name)
 ReplicationSlotInvalidationCause
 GetSlotInvalidationCause(const char *cause_name)
 {
+	ReplicationSlotInvalidationCause result = RS_INVAL_NONE;
 	Assert(cause_name);
 
 	/* Search lookup table for the cause having this name */
 	for (int i; i <= RS_INVAL_MAX_CAUSES; i++)
 	{
 		if (strcmp(SlotInvalidationCauses[i].cause_name, cause_name) == 0)
-			return SlotInvalidationCauses[i].cause;
+		{
+			result = SlotInvalidationCauses[i].cause;
+			break;
+		}
 	}
 
-	Assert(false);
-	return RS_INVAL_NONE;		/* to keep compiler quiet */
+	Assert(result != RS_INVAL_NONE);
+	return result;
 }
 
 /*
@@ -2600,15 +2604,20 @@ GetSlotInvalidationCause(const char *cause_name)
 const char *
 GetSlotInvalidationCauseName(ReplicationSlotInvalidationCause cause)
 {
+	const char *result = NULL;
+
 	/* Search lookup table for the name of this cause */
 	for (int i = 0; i <= RS_INVAL_MAX_CAUSES; i++)
 	{
 		if (SlotInvalidationCauses[i].cause == cause)
-			return SlotInvalidationCauses[i].cause_name;
+		{
+			result = SlotInvalidationCauses[i].cause_name;
+			break;
+		}
 	}
 
-	Assert(false);
-	return "none";				/* to keep compiler quiet */
+	Assert(result);
+	return result;
 }
 
 /*
