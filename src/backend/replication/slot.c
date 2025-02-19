@@ -1530,6 +1530,18 @@ CheckSlotPermissions(void)
 }
 
 /*
+ * Check whether the instance is in single-user mode.
+ */
+void
+CheckSlotIsInSingleUserMode(void)
+{
+	if (!IsUnderPostmaster)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("replication slots cannot be used in single-user mode")));
+}
+
+/*
  * Reserve WAL for the currently active slot.
  *
  * Compute and set restart_lsn in a manner that's appropriate for the type of

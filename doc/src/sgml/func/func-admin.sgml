@@ -1012,6 +1012,11 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
     are also relevant for replication.
    </para>
 
+   <para>
+    Note that slot manipulation functions except <function>pg_drop_replication_slot</function>
+    cannot be used in single-user mode.
+   </para>
+
    <table id="functions-replication-table">
     <title>Replication Management Functions</title>
     <tgroup cols="1">

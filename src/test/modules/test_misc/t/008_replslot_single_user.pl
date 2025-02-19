@@ -29,7 +29,29 @@ sub test_single_mode
 		],
 		'<' => \$queries);
 
+	return $result;
+}
+
+# Wrapper function for test_single_mode. This would be used when the input
+# command succeeds.
+sub test_single_mode_ok
+{
+	my ($node, $queries, $testname) = @_;
+
+	my $result = test_single_mode($node, $queries, $testname);
+
 	ok($result, $testname);
+}
+ 
+# Wrapper function for test_single_mode. This would be used when the input
+# command fails.
+sub test_single_mode_fail
+{
+	my ($node, $queries, $testname) = @_;
+
+	my $result = test_single_mode($node, $queries, $testname);
+
+	ok(!$result, $testname);
 }
 
 my $slot_logical = 'slot_logical';
@@ -41,53 +63,58 @@ $node->init(allows_streaming => "logical");
 $node->start;
 
 # Define initial table
-$node->safe_psql('postgres', "CREATE TABLE foo (id int)");
+$node->safe_psql(
+	'postgres', qq(
+CREATE TABLE foo (id int);
+SELECT pg_create_logical_replication_slot('$slot_logical', 'test_decoding');
+SELECT pg_create_physical_replication_slot('$slot_physical');
+));
 
 $node->stop;
 
-test_single_mode(
+test_single_mode_fail(
 	$node,
-	"SELECT pg_create_logical_replication_slot('$slot_logical', 'test_decoding')",
+	"SELECT pg_create_logical_replication_slot('another_slot', 'test_decoding')",
 	"logical slot creation");
-test_single_mode(
+test_single_mode_fail(
 	$node,
-	"SELECT pg_create_physical_replication_slot('$slot_physical', true)",
+	"SELECT pg_create_physical_replication_slot('another_slot', true)",
 	"physical slot creation");
-test_single_mode(
+test_single_mode_fail(
 	$node,
 	"SELECT pg_create_physical_replication_slot('slot_tmp', true, true)",
 	"temporary physical slot creation");
 
-test_single_mode(
+test_single_mode_fail(
 	$node, qq(
 INSERT INTO foo VALUES (1);
 SELECT pg_logical_slot_get_changes('$slot_logical', NULL, NULL);
 ),
 	"logical decoding");
 
-test_single_mode(
+test_single_mode_fail(
 	$node,
 	"SELECT pg_replication_slot_advance('$slot_logical', pg_current_wal_lsn())",
 	"logical slot advance");
-test_single_mode(
+test_single_mode_fail(
 	$node,
 	"SELECT pg_replication_slot_advance('$slot_physical', pg_current_wal_lsn())",
 	"physical slot advance");
 
-test_single_mode(
+test_single_mode_fail(
 	$node,
 	"SELECT pg_copy_logical_replication_slot('$slot_logical', 'slot_log_copy')",
 	"logical slot copy");
-test_single_mode(
+test_single_mode_fail(
 	$node,
 	"SELECT pg_copy_physical_replication_slot('$slot_physical', 'slot_phy_copy')",
 	"physical slot copy");
 
-test_single_mode(
+test_single_mode_ok(
 	$node,
 	"SELECT pg_drop_replication_slot('$slot_logical')",
 	"logical slot drop");
-test_single_mode(
+test_single_mode_ok(
 	$node,
 	"SELECT pg_drop_replication_slot('$slot_physical')",
 	"physical slot drop");

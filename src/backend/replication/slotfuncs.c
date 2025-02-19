@@ -17,6 +17,7 @@
 #include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
 #include "funcapi.h"
+#include "miscadmin.h"
 #include "replication/logical.h"
 #include "replication/slot.h"
 #include "replication/slotsync.h"
@@ -75,6 +76,9 @@ pg_create_physical_replication_slot(PG_FUNCTION_ARGS)
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
+
+	/* Slot manipulation is not allowed in single-user mode */
+	CheckSlotIsInSingleUserMode();
 
 	CheckSlotPermissions();
 
@@ -181,6 +185,9 @@ pg_create_logical_replication_slot(PG_FUNCTION_ARGS)
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
+
+	/* Slot manipulation is not allowed in single-user mode */
+	CheckSlotIsInSingleUserMode();
 
 	CheckSlotPermissions();
 
@@ -521,6 +528,9 @@ pg_replication_slot_advance(PG_FUNCTION_ARGS)
 
 	Assert(!MyReplicationSlot);
 
+	/* Slot manipulation is not allowed in single-user mode */
+	CheckSlotIsInSingleUserMode();
+
 	CheckSlotPermissions();
 
 	if (XLogRecPtrIsInvalid(moveto))
@@ -618,8 +628,12 @@ copy_replication_slot(FunctionCallInfo fcinfo, bool logical_slot)
 	TupleDesc	tupdesc;
 	HeapTuple	tuple;
 
+
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
+
+	/* Slot manipulation is not allowed in single-user mode */
+	CheckSlotIsInSingleUserMode();
 
 	CheckSlotPermissions();
 
