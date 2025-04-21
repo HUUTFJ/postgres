@@ -498,4 +498,83 @@ is( $node_publisher->psql(
 $node_publisher->stop('fast');
 $node_subscriber->stop('fast');
 
+# The bug was that the replication origin could not update when 1) the
+# apply_error_callback() is called with elevel >= ERROR and 2) the worker
+# continues working after that.
+
+$node_publisher->rotate_logfile();
+$node_publisher->start();
+
+$node_subscriber->rotate_logfile();
+$node_subscriber->start();
+
+# Set up a publication with a table
+$node_publisher->safe_psql(
+	'postgres', qq(
+	CREATE TABLE t1 (a int);
+	CREATE PUBLICATION regress_pub FOR TABLE t1;
+));
+
+# Set up a subscription which subscribes the publication
+$node_subscriber->safe_psql(
+	'postgres', qq(
+	CREATE TABLE t1 (a int);
+	CREATE SUBSCRIPTION regress_sub CONNECTION '$publisher_connstr' PUBLICATION regress_pub;
+));
+
+$node_subscriber->wait_for_subscription_sync($node_publisher, 'regress_sub');
+
+# Insert tuples and confirms replication works well
+$node_publisher->safe_psql('postgres', "INSERT INTO t1 VALUES (1);");
+
+$node_publisher->wait_for_catchup('regress_sub');
+
+$result = $node_subscriber->safe_psql('postgres', "SELECT count(*) FROM t1");
+is($result, '1', 'all tuples could be replicated');
+
+# Obtain current remote_lsn value to check its advancement later
+my $remote_lsn = $node_subscriber->safe_psql('postgres',
+	"SELECT remote_lsn FROM pg_catalog.pg_replication_origin_status os, pg_catalog.pg_subscription s WHERE os.external_id = 'pg_' || s.oid AND s.subname = 'regress_sub'"
+);
+
+# Define an after-trigger function for the table insert. It can be fired even
+# by the apply worker and always raises an exception. This situation allows
+# worker continue after apply_error_callback() is called with elevel = ERROR.
+$node_subscriber->safe_psql(
+	'postgres', q{
+CREATE FUNCTION handle_exception_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+	BEGIN
+		-- Raise an exception
+		RAISE EXCEPTION 'This is a test exception';
+	EXCEPTION
+		WHEN OTHERS THEN
+			RETURN NEW;
+	END;
+
+	RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+});
+
+$node_subscriber->safe_psql(
+	'postgres', q{
+CREATE TRIGGER silent_exception_trigger
+AFTER INSERT OR UPDATE ON t1
+FOR EACH ROW
+EXECUTE FUNCTION handle_exception_trigger();
+
+ALTER TABLE t1 ENABLE ALWAYS TRIGGER silent_exception_trigger;
+});
+
+# Insert a tuple to continue logical replication
+$node_publisher->safe_psql('postgres', "INSERT INTO t1 VALUES (2);");
+
+# Confirms the origin can be advanced
+ok( $node_subscriber->poll_query_until(
+		'postgres',
+		"SELECT remote_lsn > '$remote_lsn' FROM pg_catalog.pg_replication_origin_status os, pg_catalog.pg_subscription s WHERE os.external_id = 'pg_' || s.oid AND s.subname = 'regress_sub'", 't')
+or die "Timed out while waiting for replication origin to be updated");
+
 done_testing();
