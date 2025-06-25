@@ -139,6 +139,9 @@ int			Log_autovacuum_min_duration = 600000;
 #define MIN_AUTOVAC_SLEEPTIME 100.0 /* milliseconds */
 #define MAX_AUTOVAC_SLEEPTIME 300	/* seconds */
 
+/* Flags to tell if we are in an autovacuum process */
+static bool vci_am_autovacuum_launcher = false;
+
 /*
  * Variables to save the cost-related storage parameters for the current
  * relation being vacuumed by this autovacuum worker. Using these, we can
@@ -362,12 +365,28 @@ static void check_av_worker_gucs(void);
  ********************************************************************/
 
 /*
+ * We need this set from the outside, before InitProcess is called
+ */
+void
+vci_AutovacuumLauncherIAm(void)
+{
+	vci_am_autovacuum_launcher = true;
+}
+void
+vci_AutovacuumLauncherNotIAm(void)
+{
+	vci_am_autovacuum_launcher = false;
+}
+
+/*
  * Main entry point for the autovacuum launcher process.
  */
 void
 AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
+
+	vci_am_autovacuum_launcher = true;
 
 	Assert(startup_data_len == 0);
 
@@ -3346,6 +3365,12 @@ autovac_init(void)
 				 errhint("Enable the \"track_counts\" option.")));
 	else
 		check_av_worker_gucs();
+}
+
+bool
+vci_IsAutoVacuumLauncherProcess(void)
+{
+	return vci_am_autovacuum_launcher;
 }
 
 /*

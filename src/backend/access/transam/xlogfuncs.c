@@ -607,6 +607,7 @@ pg_get_wal_replay_pause_state(PG_FUNCTION_ARGS)
 			statestr = "not paused";
 			break;
 		case RECOVERY_PAUSE_REQUESTED:
+		case RECOVERY_VCI_PAUSE_REQUESTED:
 			statestr = "pause requested";
 			break;
 		case RECOVERY_PAUSED:

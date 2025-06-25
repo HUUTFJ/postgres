@@ -68,6 +68,11 @@
 #define BGWORKER_CLASS_PARALLEL					0x0010
 /* add additional bgworker classes here */
 
+/*
+ * Flags for cancel by admin commands.
+ */
+#define BGWORKER_CANCEL_NOACCEPT					0x0000
+#define BGWORKER_CANCEL_ADMIN_COMMANDS				0x0001
 
 typedef void (*bgworker_main_type) (Datum main_arg);
 
@@ -98,6 +103,9 @@ typedef struct BackgroundWorker
 	Datum		bgw_main_arg;
 	char		bgw_extra[BGW_EXTRALEN];
 	pid_t		bgw_notify_pid; /* SIGUSR1 this backend on start/stop */
+	int			bgw_shmem_slot; /* shmem slot ID */
+	Oid			bgw_cancel_databaseId;	/* cancel target */
+	int			bgw_cancel_flags;	/* cancel by admin commands */
 } BackgroundWorker;
 
 typedef enum BgwHandleStatus
@@ -160,5 +168,9 @@ extern void BackgroundWorkerInitializeConnectionByOid(Oid dboid, Oid useroid, ui
 /* Block/unblock signals in a background worker process */
 extern void BackgroundWorkerBlockSignals(void);
 extern void BackgroundWorkerUnblockSignals(void);
+
+/* Cancel background workers. */
+extern void AcceptBackgroundWorkerCancel(Oid databaseId, int cancel_flags);
+extern void CancelBackgroundWorkers(Oid databaseId, int cancel_flags);
 
 #endif							/* BGWORKER_H */

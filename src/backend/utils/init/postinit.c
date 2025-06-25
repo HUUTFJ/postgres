@@ -829,7 +829,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	before_shmem_exit(ShutdownPostgres, 0);
 
 	/* The autovacuum launcher is done here */
-	if (AmAutoVacuumLauncherProcess())
+	if (vci_IsAutoVacuumLauncherProcess() || AmAutoVacuumLauncherProcess())
 	{
 		/* fill in the remainder of this entry in the PgBackendStatus array */
 		pgstat_bestart_final();

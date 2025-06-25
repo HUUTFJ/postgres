@@ -51,6 +51,7 @@ extern PGDLLIMPORT int Log_autovacuum_min_duration;
 
 /* Status inquiry functions */
 extern bool AutoVacuumingActive(void);
+extern bool vci_IsAutoVacuumLauncherProcess(void);
 
 /* called from postmaster at server startup */
 extern void autovac_init(void);
@@ -63,6 +64,8 @@ pg_noreturn extern void AutoVacWorkerMain(const void *startup_data, size_t start
 
 extern bool AutoVacuumRequestWork(AutoVacuumWorkItemType type,
 								  Oid relationId, BlockNumber blkno);
+extern void vci_AutovacuumLauncherIAm(void);
+extern void vci_AutovacuumLauncherNotIAm(void);
 
 /* shared memory stuff */
 extern Size AutoVacuumShmemSize(void);

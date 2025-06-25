@@ -35,6 +35,9 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+/* TODO: Move under contrib/vci. */
+static void validateVciColumnIds(const char *values);
+
 /*
  * Contents of pg_class.reloptions
  *
@@ -557,6 +560,34 @@ static relopt_enum enumRelOpts[] =
 
 static relopt_string stringRelOpts[] =
 {
+	/* TODO: Move under contrib/vci. */
+	{
+		/* TODO: fix comment */
+		{
+			"vci_column_ids",
+			"ID for searching columns that are (or will be) indexed by VCI from vci_columns table",
+			RELOPT_KIND_VCI,
+			AccessExclusiveLock
+		},
+		0,
+		false,
+		validateVciColumnIds,
+		NULL,
+		""
+	},
+	{
+		{
+			"vci_dropped_column_ids",
+			"ID for storing dropped columns in indexed table",
+			RELOPT_KIND_VCI,
+			AccessExclusiveLock
+		},
+		0,
+		false,
+		validateVciColumnIds,
+		NULL,
+		""
+	},
 	/* list terminator */
 	{{NULL}}
 };
@@ -1916,6 +1947,12 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, vacuum_truncate), offsetof(StdRdOptions, vacuum_truncate_set)},
 		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
 		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)}
+		,
+		/* TODO: Move under contrib/vci */
+		{"vci_column_ids", RELOPT_TYPE_STRING,
+		offsetof(StdRdOptions, vci_column_ids_offset)},
+		{"vci_dropped_column_ids", RELOPT_TYPE_STRING,
+		offsetof(StdRdOptions, vci_dropped_column_ids_offset)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, kind,
@@ -2170,4 +2207,18 @@ AlterTableGetRelOptionsLockLevel(List *defList)
 	}
 
 	return lockmode;
+}
+
+/* TODO: Move under contrib/vci. */
+static void
+validateVciColumnIds(const char *values)
+{
+	if (values == NULL)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("Dummy validation for vci_column_ids and vci_dropped_column_ids")));
+
+	}
+	elog(DEBUG2, "Empty process of validateVciColumnIds: %s", values);
 }
