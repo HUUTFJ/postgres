@@ -18,6 +18,8 @@
 #include "postmaster/bgworker.h"
 #include "utils/relcache.h"
 
+#include "vci_ros.h"
+
 /**
  * The threshold of tid->crid update list item coutns to execute tid->crid update
  */

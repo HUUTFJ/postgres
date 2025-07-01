@@ -11,6 +11,8 @@
 #ifndef VCI_SUPPORTED_OID_H
 #define VCI_SUPPORTED_OID_H
 
+#include "utils/snapshot.h"
+
 #define VCI_MAX_APPLICABLE_UDFS (32)
 
 typedef struct

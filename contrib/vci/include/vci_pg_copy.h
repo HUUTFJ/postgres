@@ -13,6 +13,8 @@
 #ifndef VCI_NUMERIC_H
 #define VCI_NUMERIC_H
 
+#include "datatype/timestamp.h"
+
 /* taken from numeric.c */
 
 typedef int16 NumericDigit;

@@ -11,6 +11,10 @@
 #ifndef VCI_PLANNER_H
 #define VCI_PLANNER_H
 
+#include "access/attnum.h"
+#include "nodes/execnodes.h"
+#include "nodes/plannodes.h"
+
 /**
  * Types for internal use only by planners
  *

@@ -13,6 +13,9 @@
 #define VCI_MEMORY_ENTRY_H
 
 #include "lib/ilist.h"
+#include "storage/lwlock.h"
+
+#include "vci_ros.h"
 
 /**
  * the key when searching a vci_memory_entry_t type value from its set.

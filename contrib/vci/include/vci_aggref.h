@@ -20,6 +20,7 @@
 #include "nodes/primnodes.h"
 #include "utils/tuplesort.h"
 
+#include "vci_executor.h"
 
 /**
  * AggStatePerAggData - per-aggregate working state for the Agg scan

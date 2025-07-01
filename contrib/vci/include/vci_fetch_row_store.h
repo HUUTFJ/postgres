@@ -10,6 +10,8 @@
 #ifndef VCI_FETCH_ROW_STORE_H
 #define VCI_FETCH_ROW_STORE_H
 
+#include "access/heapam.h"
+
 struct VciScanState;
 
 extern void VciExecAssignScanProjectionInfo(struct VciScanState *node);

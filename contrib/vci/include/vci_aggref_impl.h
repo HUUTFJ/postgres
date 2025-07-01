@@ -18,6 +18,8 @@
 #include "utils/float.h"
 #include "datatype/timestamp.h"
 
+#include "vci_executor.h"
+
 static void
 VCI_ADVANCE_AGGREF_FUNC(VciAggState *aggstate,
 						int aggno,
