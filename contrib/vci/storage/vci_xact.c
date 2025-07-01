@@ -76,7 +76,7 @@ vci_transaction_get_type(TransactionId xid)
  */
 
 /* The length of shift used for advancing generations */
-const int	xid_shift_bits = 30;
+static const int	xid_shift_bits = 30;
 
 /*
  * Returns extended xid based on the given one.
