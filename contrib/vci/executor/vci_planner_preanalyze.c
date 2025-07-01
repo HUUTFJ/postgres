@@ -52,7 +52,7 @@ static bool preanalyze_plan_tree_mutator(Plan **plan_p, Plan *parent, void *cont
 static bool collect_data_in_expression(Node *node, void *context);
 static bool collect_data_in_initplan(Node *node, void *context);
 
-bool		isGatherExists;
+static bool	isGatherExists;
 
 /**
  * Analysis before plan rewrite

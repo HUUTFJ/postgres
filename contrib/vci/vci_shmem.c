@@ -87,10 +87,6 @@ void
 vci_shmem_startup_routine(void)
 {
 	bool		found;
-#ifdef WIN32
-	void	   *addr;
-	Size		size;
-#endif
 
 	VciGuc.max_devices = 0;
 
