@@ -48,9 +48,6 @@ typedef struct vci_workerslot
 	Oid			oid;
 } vci_workerslot_t;
 
-extern PGDLLIMPORT bool VciIsRosControlDaemon;
-extern PGDLLIMPORT bool VciIsRosControlWorker;
-
 /* ************************* */
 /* daemon functions          */
 /* ************************* */
