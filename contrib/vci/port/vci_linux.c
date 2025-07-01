@@ -20,7 +20,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <assert.h>
-#include <sys/vfs.h>
 #include <sys/param.h>
 #include <string.h>
 #include <dirent.h>
