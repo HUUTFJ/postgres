@@ -315,23 +315,19 @@ vci_FillOneRowInRosChunkBuffer(RosChunkBuffer *rosChunkBuffer,
 					break;
 				case vcis_compression_type_variable_raw:
 					{
-						static bool initialized = false;
-						static struct varlena datumNull;
+						struct varlena datumNull;
 						vci_offset_in_extent_t curOffset;
 						vci_offset_in_extent_t size;
 
-						if (!initialized)
-						{
-							initialized = true;
-							MemSet(&datumNull, 0, sizeof(datumNull));
+						MemSet(&datumNull, 0, sizeof(datumNull));
 
-							/*
-							 * varlena for extenal is type of 1B_E and has the
-							 * the length of zero.  We must give 1 or larger
-							 * length to normal varlena data.
-							 */
-							SET_VARSIZE_SHORT(&datumNull, 1);
-						}
+						/*
+						 * varlena for extenal is type of 1B_E and has the
+						 * the length of zero.  We must give 1 or larger
+						 * length to normal varlena data.
+						 */
+						SET_VARSIZE_SHORT(&datumNull, 1);
+
 						size = VARSIZE_ANY(&datumNull);
 						curOffset = rosChunkBuffer->dataOffset[colId][offset];
 						rosChunkBuffer->dataOffset[colId][offset + 1] =
