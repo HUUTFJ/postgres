@@ -44,25 +44,6 @@
 #define strtok_r strtok_s
 #endif
 
-/** Define printf format of data type for Non-C99 **/
-#if defined (__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-/* C99 systems have <inttypes.h>. Non-C99 systems may or may not. */
-#include <inttypes.h>
-#else
-#ifndef WIN32
-#define PRIi64 "li"
-#define PRId64 "ld"
-#define PRIu64 "lu"
-#define PRIx64 "lx"
-#else
-#define PRIi64 "lli"
-#define PRId64 "lld"
-#define PRIu64 "llu"
-#define PRIx64 "llx"
-#endif
-#endif
-
-
 /** Restart time for Daemon(Backgorund Worker) */
 #define VCI_DAEMON_RESTART_TIME		(3)
 

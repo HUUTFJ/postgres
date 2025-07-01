@@ -637,8 +637,42 @@ typedef enum
 #define vci_MakeUint64FromBlockNumberAndOffset(blockNumber, offset) \
 	(((uint64) (blockNumber) << (BITS_PER_BYTE * sizeof(OffsetNumber))) | (offset))
 
+/** Local delete list */
+typedef struct vci_local_delete_list
+{
+	uint32		num_entry;		/* the number of CRID stored */
+	uint32		length;			/* capacity of crid_list */
+	uint64	   *crid_list;		/* actual values taken from whiteout WOS */
+} vci_local_delete_list;
 
-struct vci_local_ros_t;
+struct vci_CSFetchContextData;
+
+/** Local ROS */
+typedef struct vci_local_ros
+{
+	vci_local_delete_list local_delete_list;
+
+	/** Number of extents of local ROS.
+	 * The minimum extent ID of the local ROS is (-num_local_extents).
+	 */
+	uint32		num_local_extents;
+
+	/** Pointer of the array of pointers to extent data.
+	 * When release the data, first pfree(extent[i]) where i is from zero
+	 * to (num_local_extents - 1), then pfree(extent).
+	 */
+	struct vci_virtual_tuples **extent;
+
+	/* Memory context to store local ROS data */
+	MemoryContext memory_context;
+
+	/* not localized one */
+	/** this fetch_context is allocated in shared memory context created
+	 * in vci_GenerateLocalRos(), and destructed in vci_DestroyLocalRos().
+	 * In the latter function, the fetch_context is freed automatically.
+	 */
+	struct vci_CSFetchContextData *fetch_context;
+} vci_local_ros_t;
 
 typedef struct vci_RelationPair
 {
@@ -855,7 +889,8 @@ vci_GetNumRowsInLocalRosExtent(int numColumns)
 	return 1U << vci_GetHighestBit(Min(numRowsInExtent, VCI_NUM_ROWS_IN_EXTENT));
 }
 
-extern void vci_DestroyLocalRos(struct vci_local_ros *localRos);
+
+extern void vci_DestroyLocalRos(vci_local_ros_t *localRos);
 
 #define vci_WriteExtentInfoInMainRosForWosRosConvInit(info, extentId, xid) \
 	vci_WriteExtentInfoInMainRosForWriteExtent((info), \
@@ -868,44 +903,6 @@ extern void vci_DestroyLocalRos(struct vci_local_ros *localRos);
 											   (extentId), \
 											   (xid), \
 											   vci_rc_copy_command)
-
-/** Local delete list */
-typedef struct vci_local_delete_list
-{
-	uint32		num_entry;		/* the number of CRID stored */
-	uint32		length;			/* capacity of crid_list */
-	uint64	   *crid_list;		/* actual values taken from whiteout WOS */
-} vci_local_delete_list;
-
-struct vci_vector_set_t;
-struct vci_CSFetchContextData;
-
-/** Local ROS */
-typedef struct vci_local_ros
-{
-	vci_local_delete_list local_delete_list;
-
-	/** Number of extents of local ROS.
-	 * The minimum extent ID of the local ROS is (-num_local_extents).
-	 */
-	uint32		num_local_extents;
-
-	/** Pointer of the array of pointers to extent data.
-	 * When release the data, first pfree(extent[i]) where i is from zero
-	 * to (num_local_extents - 1), then pfree(extent).
-	 */
-	struct vci_virtual_tuples **extent;
-
-	/* Memory context to store local ROS data */
-	MemoryContext memory_context;
-
-	/* not localized one */
-	/** this fetch_context is allocated in shared memory context created
-	 * in vci_GenerateLocalRos(), and destructed in vci_DestroyLocalRos().
-	 * In the latter function, the fetch_context is freed automatically.
-	 */
-	struct vci_CSFetchContextData *fetch_context;
-} vci_local_ros_t;
 
 /*
  *
@@ -971,7 +968,7 @@ vci_PassByRefForFixed(Form_pg_attribute attr)
 		return true;
 #endif							/* #ifndef USE_FLOAT8_BYVAL */
 
-	return sizeof(Datum) < attr->attlen;
+	return sizeof(Datum) < (unsigned long) attr->attlen;
 }
 
 static inline void *

@@ -38,8 +38,6 @@
 #include "vci_fetch.h"
 #include "vci_mem.h"
 #include <stdint.h>
-/* #include <inttypes.h> */
-/* C99 systems have <inttypes.h>. Non-C99 systems may or may not. */
 
 #if (!defined(WIN32))
 
@@ -999,7 +997,7 @@ vci_fill_vector_set_from_column_store(VciScanState *scanstate)
 			vci_CSFetchVirtualTuples(vector_set, crid_start, vector_end - crid_start);
 
 		if (scanstate->pos.num_fetched_rows < 1)
-			elog(ERROR, "vci_CSFetchVirtualTuples returns %d num_fetched_rows(crid=%" PRIi64 ")",
+			elog(ERROR, "vci_CSFetchVirtualTuples returns %d num_fetched_rows(crid=" INT64_FORMAT ")",
 				 scanstate->pos.num_fetched_rows, crid_start);
 
 		scanstate->pos.offset_in_extent = (crid_start & (VCI_NUM_ROWS_IN_EXTENT - 1)) + scanstate->pos.num_fetched_rows;

@@ -91,11 +91,11 @@ vci_AllocateAndCopy(void *dst, void *src, Size size)
 {
 	if (src && (0 < size))
 	{
-		*(char **) dst = palloc(size);
-		MemCpy(*(char **) dst, src, size);
+		dst = palloc(size);
+		MemCpy(dst, src, size);
 	}
 	else
-		*(char **) dst = NULL;
+		dst = NULL;
 }
 
 /**
