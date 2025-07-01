@@ -41,7 +41,10 @@ do {															\
 		 errmsg("value out of range: underflow")));				\
 } while(0)
 
-float8 *
+/*
+ * src/backend/utils/adt/float.c
+ */
+static inline float8 *
 check_float8_array(ArrayType *transarray, const char *caller, int n)
 {
 	/*
