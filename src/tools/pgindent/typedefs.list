@@ -2078,6 +2078,7 @@ ParallelTransState
 ParallelVacuumState
 ParallelWorkerContext
 ParallelWorkerInfo
+ParallelizedTxnEntry
 Param
 ParamCompileHook
 ParamExecData
@@ -2547,6 +2548,8 @@ ReparameterizeForeignPathByChild_function
 ReplaceVarsFromTargetList_context
 ReplaceVarsNoMatchOption
 ReplaceWrapOption
+ReplicaIdentityEntry
+ReplicaIdentityKey
 ReplicaIdentityStmt
 ReplicationKind
 ReplicationSlot
@@ -4031,6 +4034,7 @@ remoteDep
 remove_nulling_relids_context
 rendezvousHashEntry
 rep
+replica_identity_hash
 replace_rte_variables_callback
 replace_rte_variables_context
 report_error_fn
