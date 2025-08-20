@@ -39,6 +39,8 @@
 #include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
+#include "pgstat.h"
+#include "postmaster/bgworker.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -810,8 +812,18 @@ LockAcquire(const LOCKTAG *locktag,
 			bool sessionLock,
 			bool dontWait)
 {
-	return LockAcquireExtended(locktag, lockmode, sessionLock, dontWait,
-							   true, NULL, false);
+	/*
+	 * Don't lock for VCI parallel workers and other type of workers should go
+	 * in normal flow, In case if there is any change in background worker
+	 * name for VCI parallel workers, the following code also needs an update.
+	 * FIXME: Try to use the community parallelism code, so that we don't need
+	 * our own VCI parallel infrastructure.
+	 */
+	if (AmBackgroundWorkerProcess() && strstr(MyBgworkerEntry->bgw_name, "backend="))
+		return LOCKACQUIRE_OK;
+	else
+		return LockAcquireExtended(locktag, lockmode, sessionLock, dontWait,
+								   true, NULL, false);
 }
 
 /*
@@ -2107,6 +2119,16 @@ LockRelease(const LOCKTAG *locktag, LOCKMODE lockmode, bool sessionLock)
 	 */
 	if (!locallock || locallock->nLocks <= 0)
 	{
+		/*
+		 * Don't lock for VCI parallel workers and other type of workers
+		 * should go in normal flow, In case if there is any change in
+		 * background worker name for VCI parallel workers, the following code
+		 * also needs an update. FIXME: Try to use the community parallelism
+		 * code, so that we don't need our own VCI parallel infrastructure.
+		 */
+		if (AmBackgroundWorkerProcess() && strstr(MyBgworkerEntry->bgw_name, "backend="))
+			return true;
+
 		elog(WARNING, "you don't own a lock of type %s",
 			 lockMethodTable->lockModeNames[lockmode]);
 		return false;

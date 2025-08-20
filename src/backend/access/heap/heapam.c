@@ -54,6 +54,7 @@
 #include "utils/spccache.h"
 #include "utils/syscache.h"
 
+void		(*add_index_delete_hook) (Relation indexRelation, ItemPointer heap_tid, TransactionId xmin) = NULL;
 
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
 									 TransactionId xid, CommandId cid, int options);
@@ -364,6 +365,9 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 * results for a non-MVCC snapshot, the caller must hold some higher-level
 	 * lock that ensures the interesting tuple(s) won't change.)
 	 */
+	if (keep_startblock)
+		goto skip_get_number_of_blocks;
+
 	if (scan->rs_base.rs_parallel != NULL)
 	{
 		bpscan = (ParallelBlockTableScanDesc) scan->rs_base.rs_parallel;
@@ -371,6 +375,8 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	}
 	else
 		scan->rs_nblocks = RelationGetNumberOfBlocks(scan->rs_base.rs_rd);
+
+skip_get_number_of_blocks:
 
 	/*
 	 * If the table is large relative to NBuffers, use a bulk-read access
@@ -2798,6 +2804,7 @@ heap_delete(Relation relation, ItemPointer tid,
 	bool		all_visible_cleared = false;
 	HeapTuple	old_key_tuple = NULL;	/* replica identity of the tuple */
 	bool		old_key_copied = false;
+	TransactionId old_xmin;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -3044,6 +3051,8 @@ l1:
 							  xid, LockTupleExclusive, true,
 							  &new_xmax, &new_infomask, &new_infomask2);
 
+	old_xmin = HeapTupleHeaderGetXmin(tp.t_data);
+
 	START_CRIT_SECTION();
 
 	/*
@@ -3189,6 +3198,9 @@ l1:
 	if (old_key_tuple != NULL && old_key_copied)
 		heap_freetuple(old_key_tuple);
 
+	if (add_index_delete_hook)
+		add_index_delete_hook(relation, tid, old_xmin);
+
 	return TM_Ok;
 }
 
@@ -3291,6 +3303,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 				infomask2_old_tuple,
 				infomask_new_tuple,
 				infomask2_new_tuple;
+	TransactionId old_xmin;
 
 	Assert(ItemPointerIsValid(otid));
 
@@ -3736,6 +3749,8 @@ l2:
 							  xid, *lockmode, true,
 							  &xmax_old_tuple, &infomask_old_tuple,
 							  &infomask2_old_tuple);
+
+	old_xmin = HeapTupleHeaderGetRawXmin(oldtup.t_data);
 
 	/*
 	 * And also prepare an Xmax value for the new copy of the tuple.  If there
@@ -4219,6 +4234,9 @@ l2:
 	bms_free(id_attrs);
 	bms_free(modified_attrs);
 	bms_free(interesting_attrs);
+
+	if (add_index_delete_hook)
+		add_index_delete_hook(relation, otid, old_xmin);
 
 	return TM_Ok;
 }

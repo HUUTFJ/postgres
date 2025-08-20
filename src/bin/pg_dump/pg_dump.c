@@ -7471,6 +7471,8 @@ getTables(Archive *fout, int *numTables)
 		tblinfo[i].dummy_view = false;	/* might get set during sort */
 		tblinfo[i].postponed_def = false;	/* might get set during sort */
 
+		tblinfo[i].dobj.isvciview = false;
+
 		/* Tables have data */
 		tblinfo[i].dobj.components |= DUMP_COMPONENT_DATA;
 
@@ -8544,6 +8546,17 @@ getRules(Archive *fout)
 		ruleinfo[i].ev_enabled = *(PQgetvalue(res, i, i_ev_enabled));
 		if (ruleinfo[i].ruletable)
 		{
+			/*
+			 * isvciview is set to true when the table is a VCI internal relation. The
+			 * judgement is done by the logic in vci_isVciRelation function
+			 */
+			if ((ruleinfo[i].ruletable->relkind == RELKIND_MATVIEW ||
+				 ruleinfo[i].ruletable->relkind == RELKIND_VIEW) &&
+				!strcmp(ruleinfo[i].ruletable->dobj.name, ruleinfo[i].dobj.name))
+			{
+				ruleinfo[i].ruletable->dobj.isvciview = true;
+			}
+
 			/*
 			 * If the table is a view or materialized view, force its ON
 			 * SELECT rule to be sorted before the view itself --- this
@@ -17009,8 +17022,9 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 	int			j,
 				k;
 
-	/* We had better have loaded per-column details about this table */
-	Assert(tbinfo->interesting);
+	/* Do not dump VCI internal relations */
+	if (tbinfo->dobj.isvciview)
+		return;
 
 	qrelname = pg_strdup(fmtId(tbinfo->dobj.name));
 	qualrelname = pg_strdup(fmtQualifiedDumpable(tbinfo));
@@ -20075,12 +20089,27 @@ addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
 			case DO_FDW:
 			case DO_FOREIGN_SERVER:
 			case DO_TRANSFORM:
+
+				/*
+				 * Do not add dependency for VCI internal relations to suppress dependency
+				 * loop message
+				 */
+				if (dobj->isvciview)
+					break;
 				/* Pre-data objects: must come before the pre-data boundary */
 				addObjectDependency(preDataBound, dobj->dumpId);
 				break;
+			case DO_LARGE_OBJECT:
+
+				/*
+				 * Do not add dependency for VCI internal relations to suppress dependency
+				 * loop message
+				 */
+				if (dobj->isvciview)
+					break;
+				/* fallthrough */
 			case DO_TABLE_DATA:
 			case DO_SEQUENCE_SET:
-			case DO_LARGE_OBJECT:
 			case DO_LARGE_OBJECT_DATA:
 				/* Data objects: must come between the boundaries */
 				addObjectDependency(dobj, preDataBound->dumpId);

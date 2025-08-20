@@ -357,6 +357,22 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 		}
 
 		/*
+		 * Set shmem slot number, and initialize cancel flags.
+		 */
+		rw->rw_worker.bgw_shmem_slot = slotno;
+
+		rw->rw_worker.bgw_cancel_databaseId = InvalidOid;
+		rw->rw_worker.bgw_cancel_flags = BGWORKER_CANCEL_NOACCEPT;
+
+		/*
+		 * Update the contents in the shared memory also, these are used in
+		 * EXEC_BACKEND (win32) case
+		 */
+		slot->worker.bgw_shmem_slot = slotno;
+		slot->worker.bgw_cancel_databaseId = InvalidOid;
+		slot->worker.bgw_cancel_flags = BGWORKER_CANCEL_NOACCEPT;
+
+		/*
 		 * Copy strings in a paranoid way.  If shared memory is corrupted, the
 		 * source data might not even be NUL-terminated.
 		 */
@@ -1395,4 +1411,76 @@ GetBackgroundWorkerTypeByPid(pid_t pid)
 		return NULL;
 
 	return result;
+}
+
+/*
+ * Accept background worker cancel.
+ * Set cancel flags and databaseId.
+ */
+void
+AcceptBackgroundWorkerCancel(Oid databaseId, int cancel_flags)
+{
+	int			slotno;
+	BackgroundWorkerSlot *slot;
+
+	/* Get shmem slot number from BGW entry. */
+	Assert(MyBgworkerEntry);
+	slotno = MyBgworkerEntry->bgw_shmem_slot;
+
+	/* Get shmem slot address. */
+	Assert(slotno < BackgroundWorkerData->total_slots);
+	slot = &BackgroundWorkerData->slot[slotno];
+
+	/* Set cancel flags and databaseId to sgmem slot. */
+	/* 1st, set databaseId. */
+	slot->worker.bgw_cancel_databaseId = databaseId;
+	/* 2nd, set cancel flags. */
+	slot->worker.bgw_cancel_flags = cancel_flags;
+
+	/*
+	 * This operation doesn't need LOCK, because 'bgw_cancel_flags' is 32bit
+	 * value.
+	 */
+}
+
+/*
+ * Cancel background workers.
+ */
+void
+CancelBackgroundWorkers(Oid databaseId, int cancel_flags)
+{
+	int			slotno;
+	bool		signal_postmaster = false;
+
+	LWLockAcquire(BackgroundWorkerLock, LW_EXCLUSIVE);
+
+	for (slotno = 0; slotno < BackgroundWorkerData->total_slots; ++slotno)
+	{
+		BackgroundWorkerSlot *slot = &BackgroundWorkerData->slot[slotno];
+
+		/* Check worker slot. */
+		if (slot->in_use)
+		{
+			/* 1st, check cancel flags. */
+			if (slot->worker.bgw_cancel_flags & cancel_flags)
+			{
+				/* 2nd, compare databaseId. */
+				if (slot->worker.bgw_cancel_databaseId == databaseId)
+				{
+					/*
+					 * Set terminate flag in shared memory, unless slot has
+					 * been reused.
+					 */
+					slot->terminate = true;
+					signal_postmaster = true;
+				}
+			}
+		}
+	}
+
+	LWLockRelease(BackgroundWorkerLock);
+
+	/* Make sure the postmaster notices the change to shared memory. */
+	if (signal_postmaster)
+		SendPostmasterSignal(PMSIGNAL_BACKGROUND_WORKER_CHANGE);
 }

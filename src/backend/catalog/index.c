@@ -133,6 +133,7 @@ static void ResetReindexProcessing(void);
 static void SetReindexPending(List *indexes);
 static void RemoveReindexPending(Oid indexOid);
 
+bool		(*add_reindex_index_hook) (Relation) = NULL;
 
 /*
  * relationHasPrimaryKey
@@ -342,12 +343,17 @@ ConstructTupleDescriptor(Relation heapRelation,
 			/* Simple index column */
 			const FormData_pg_attribute *from;
 
-			Assert(atnum > 0);	/* should've been caught above */
-
 			if (atnum > natts)	/* safety check */
 				elog(ERROR, "invalid column number %d", atnum);
-			from = TupleDescAttr(heapTupDesc,
-								 AttrNumberGetAttrOffset(atnum));
+			if (atnum > 0)
+			{
+				from = TupleDescAttr(heapTupDesc,
+									 AttrNumberGetAttrOffset(atnum));
+			}
+			else
+			{
+				from = SystemAttributeDefinition(atnum);
+			}
 
 			to->atttypid = from->atttypid;
 			to->attlen = from->attlen;
@@ -3690,6 +3696,25 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
 		/* Close parent heap relation, but keep locks */
 		table_close(heapRelation, NoLock);
 		return;
+	}
+
+	if (add_reindex_index_hook)
+	{
+		if (!add_reindex_index_hook(iRel))
+		{
+			RemoveReindexPending(RelationGetRelid(iRel));
+
+			/* Roll back any GUC changes */
+			AtEOXact_GUC(false, save_nestlevel);
+
+			/* Restore userid and security context */
+			SetUserIdAndSecContext(save_userid, save_sec_context);
+
+			/* Close rels, but keep locks */
+			index_close(iRel, NoLock);
+			table_close(heapRelation, NoLock);
+			return;
+		}
 	}
 
 	if (progress)

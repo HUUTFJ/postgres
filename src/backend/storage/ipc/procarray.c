@@ -65,6 +65,8 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+#include "postmaster/bgworker.h"
+
 #define UINT32_ACCESS_ONCE(var)		 ((uint32)(*((volatile uint32 *)&(var))))
 
 /* Our shared memory area */
@@ -1925,7 +1927,8 @@ GlobalVisHorizonKindForRel(Relation rel)
 	Assert(!rel ||
 		   rel->rd_rel->relkind == RELKIND_RELATION ||
 		   rel->rd_rel->relkind == RELKIND_MATVIEW ||
-		   rel->rd_rel->relkind == RELKIND_TOASTVALUE);
+		   rel->rd_rel->relkind == RELKIND_TOASTVALUE ||
+		   rel->rd_rel->relkind == RELKIND_INDEX);
 
 	if (rel == NULL || rel->rd_rel->relisshared || RecoveryInProgress())
 		return VISHORIZON_SHARED;
@@ -3767,6 +3770,11 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
 		 */
 		for (index = 0; index < nautovacs; index++)
 			(void) kill(autovac_pids[index], SIGTERM);	/* ignore any error */
+
+		/*
+		 * Cancel background workers by admin commands.
+		 */
+		CancelBackgroundWorkers(databaseId, BGWORKER_CANCEL_ADMIN_COMMANDS);
 
 		/* sleep, then try again */
 		pg_usleep(100 * 1000L); /* 100ms */

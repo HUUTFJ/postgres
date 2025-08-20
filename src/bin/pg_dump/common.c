@@ -360,6 +360,7 @@ flagInhTables(Archive *fout, TableInfo *tblinfo, int numTables,
 			AssignDumpId(&attachinfo->dobj);
 			attachinfo->dobj.name = pg_strdup(tblinfo[i].dobj.name);
 			attachinfo->dobj.namespace = tblinfo[i].dobj.namespace;
+			attachinfo->dobj.isvciview = false;
 			attachinfo->parentTbl = tblinfo[i].parents[0];
 			attachinfo->partitionTbl = &tblinfo[i];
 
