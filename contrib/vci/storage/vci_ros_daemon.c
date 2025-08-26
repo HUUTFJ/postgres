@@ -46,7 +46,6 @@
 
 #include "vci_memory_entry.h"
 
-bool		VciIsRosControlDaemon;
 bool		VciIsRosControlWorker;
 
 /**
@@ -93,9 +92,9 @@ static void callback_on_exit_worker(int code, Datum arg);
 
 /* BGW_MAXREN = 64 */
 /* If the ROS control worker name is changed then update the bgw_name check in LockAcquire() too.*/
-const char	VCI_ROS_CONTROL_DAEMON_NAME[BGW_MAXLEN] = "vci:ROS control daemon";
-const char	VCI_ROS_CONTROL_WORKER_NAME_TEMP[BGW_MAXLEN] = "vci:ROS control worker(slot=%d)";
-const char	VCI_ROS_CONTROL_WORKER_TYPE[BGW_MAXLEN] = "vci:ROS control worker";
+static const char VCI_ROS_CONTROL_DAEMON_NAME[BGW_MAXLEN] = "vci:ROS control daemon";
+static const char VCI_ROS_CONTROL_WORKER_NAME_TEMP[BGW_MAXLEN] = "vci:ROS control worker(slot=%d)";
+static const char VCI_ROS_CONTROL_WORKER_TYPE[BGW_MAXLEN] = "vci:ROS control worker";
 
 /* flags set by signal handlers */
 static volatile sig_atomic_t gotSighup = false;
@@ -195,8 +194,6 @@ vci_ROS_control_daemon_main(Datum main_arg)
 	MyBackendType = B_AUTOVAC_LAUNCHER;
 
 	pg_bindtextdomain(TEXTDOMAIN);
-
-	VciIsRosControlDaemon = true;
 
 	/* StringInfoData buf; */
 	elog(DEBUG1, "start initialize %s", MyBgworkerEntry->bgw_name);

@@ -643,9 +643,7 @@ typedef enum
 #define vci_GetOffsetFromUint64(tId) \
 	((tId) & ((1U << (BITS_PER_BYTE * sizeof(OffsetNumber))) - 1))
 #define vci_MakeUint64FromBlockNumberAndOffset(blockNumber, offset) \
-	(AssertMacro((0 <= (offset)) \
-				 && ((offset) < (1U << (BITS_PER_BYTE * sizeof(OffsetNumber))))), \
-	 ((uint64) (blockNumber) << (BITS_PER_BYTE * sizeof(OffsetNumber))) | (offset))
+	(((uint64) (blockNumber) << (BITS_PER_BYTE * sizeof(OffsetNumber))) | (offset))
 
 /** Local delete list */
 typedef struct vci_local_delete_list

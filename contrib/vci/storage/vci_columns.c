@@ -516,7 +516,6 @@ WriteDeleteVector(vci_MainRelHeaderInfo *info,
 	LOCKMODE	lockmode = RowExclusiveLock;
 	int			numExtentPages = VCI_NUM_PAGES_IN_EXTENT_FOR_DELETE;
 	BlockNumber startBlockNumber = numExtentPages * extentId;
-	int			outPtr;
 
 	Buffer		buffer;
 
@@ -551,7 +550,6 @@ WriteDeleteVector(vci_MainRelHeaderInfo *info,
 		}
 	}
 
-	outPtr = 0;
 	for (chunkId = 0; chunkId < src->numFilled; ++chunkId)
 	{
 		RosChunkBuffer *chunk = src->chunk[chunkId];
@@ -559,10 +557,6 @@ WriteDeleteVector(vci_MainRelHeaderInfo *info,
 		if (chunk->deleteData)
 		{
 			abort();			/* FIXME */
-		}
-		else
-		{
-			outPtr += chunk->numFilled;
 		}
 	}
 

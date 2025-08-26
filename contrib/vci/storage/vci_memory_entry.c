@@ -238,7 +238,7 @@ initializeMemoryEntryCommon(vci_memory_entry_t *entry, vci_id_t *vciid, Oid tsid
 	entry->id.oid = vciid->oid;
 	entry->id.dbid = vciid->dbid;
 	entry->tsid = tsid;
-	if (tsid == InvalidOid && !vciid->dbid == InvalidOid)
+	if (!OidIsValid(tsid) && OidIsValid(vciid->dbid))
 	{
 		entry->real_tsid = getDefaultTablespaceOid(vciid->dbid);
 		if (entry->real_tsid == InvalidOid)
