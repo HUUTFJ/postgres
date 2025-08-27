@@ -340,8 +340,8 @@ vci_FillOneRowInRosChunkBuffer(RosChunkBuffer *rosChunkBuffer,
 							 * the length of zero.  We must give 1 or larger
 							 * length to normal varlena data.
 							 */
-							SET_VARSIZE_SHORT(&datumNull, 2);
-							size = 2;
+							SET_VARSIZE_SHORT(&datumNull, 1);
+							size = 1;
 						}
 						curOffset = rosChunkBuffer->dataOffset[colId][offset];
 						rosChunkBuffer->dataOffset[colId][offset + 1] =
