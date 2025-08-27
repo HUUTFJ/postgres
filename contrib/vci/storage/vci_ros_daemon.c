@@ -263,7 +263,7 @@ vci_ROS_control_daemon_main(Datum main_arg)
 		elog(DEBUG2, ">>> 1. control_max_workers = %d", VciGuc.control_max_workers);
 		for (i = 0; i < VciGuc.control_max_workers; i++)
 		{
-			elog(DEBUG2, ">>>> 1. workerslot[%d].pid is %d", i, workerslot[i].pid);
+			elog(DEBUG2, ">>>> 1. workerslot[%d].pid is %d", i, (int) workerslot[i].pid);
 			if (workerslot[i].pid != 0)
 			{
 				pid_t		pid;
@@ -304,7 +304,7 @@ vci_ROS_control_daemon_main(Datum main_arg)
 		elog(DEBUG2, ">>> 2. control_max_workers = %d", VciGuc.control_max_workers);
 		for (i = 0; i < VciGuc.control_max_workers; i++)
 		{
-			elog(DEBUG2, ">>> 2. workerslot[%d].pid is %d", i, workerslot[i].pid);
+			elog(DEBUG2, ">>> 2. workerslot[%d].pid is %d", i, (int) workerslot[i].pid);
 			if (workerslot[i].pid == 0)
 			{
 				int			j;
