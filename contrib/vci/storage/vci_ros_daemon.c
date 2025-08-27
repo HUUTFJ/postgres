@@ -46,8 +46,6 @@
 
 #include "vci_memory_entry.h"
 
-bool		VciIsRosControlWorker;
-
 /**
  * message on worker exit.
  */
@@ -733,8 +731,6 @@ vci_ROS_control_worker_main(Datum main_arg)
 	int			num_converted_whiteout_wos = INT_MAX;
 
 	pg_bindtextdomain(TEXTDOMAIN);
-
-	VciIsRosControlWorker = true;
 
 	pqsignal(SIGHUP, vci_ROSControlDaemonSighup);
 	pqsignal(SIGTERM, vci_ROSControlDaemonSigterm);
