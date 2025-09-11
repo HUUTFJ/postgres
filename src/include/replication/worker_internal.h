@@ -25,6 +25,7 @@
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
 #include "storage/spin.h"
+#include "utils/dsa.h"
 
 /* Different types of worker */
 typedef enum LogicalRepWorkerType
@@ -200,6 +201,10 @@ typedef struct ParallelApplyWorkerShared
 	dshash_table_handle parallelized_txns_handle;
 
 	bool		has_dependent_txn;
+
+	/* Dependency hash table handler */
+	dsa_handle dependency_dsa_handle;
+	dshash_table_handle dependency_dshash_handle;
 } ParallelApplyWorkerShared;
 
 /*
@@ -367,6 +372,9 @@ extern bool pa_transaction_committed(TransactionId xid);
 extern void pa_record_dependency_on_transactions(List *depends_on_xids);
 extern void pa_commit_transaction(void);
 extern void pa_wait_for_depended_transaction(TransactionId xid);
+
+extern void atach_dependency_hash(dsa_handle *out_dsa, dshash_table_handle *out_hash);
+extern void dependency_cleanup_for_xid(TransactionId xid);
 
 #define isParallelApplyWorker(worker) ((worker)->in_use && \
 									   (worker)->type == WORKERTYPE_PARALLEL_APPLY)

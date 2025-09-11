@@ -256,11 +256,13 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_subscription_rel.h"
+#include "common/hashfn.h"
 #include "commands/subscriptioncmds.h"
 #include "commands/tablecmds.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/execPartition.h"
+#include "lib/dshash.h"
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
@@ -546,46 +548,52 @@ typedef struct ApplySubXactData
 
 static ApplySubXactData subxact_data = {0, 0, InvalidTransactionId, NULL};
 
+/* dshash key; hash is computed from relid and replica identity columns */
 typedef struct ReplicaIdentityKey
 {
 	Oid			relid;
-	LogicalRepTupleData *data;
+	uint32		hash;
 } ReplicaIdentityKey;
 
+/*
+ * dshash entry; Holds last remote_xid that modified the tuple on the publisher.
+ */
 typedef struct ReplicaIdentityEntry
 {
-	ReplicaIdentityKey *keydata;
+	ReplicaIdentityKey keydata;
 	TransactionId remote_xid;
-
-	/* needed for simplehash */
-	uint32		hash;
-	char		status;
 } ReplicaIdentityEntry;
 
-#include "common/hashfn.h"
+/*
+ * Build a hash value from the oid and replica identity columns.
+ *
+ * XXX: do we have to extend hash value?
+ */
+static uint32
+build_hash(Oid relid, LogicalRepTupleData *data, LogicalRepRelMapEntry *relentry)
+{
+	int			i;
+	uint32		hashkey = 0;
 
-static uint32 hash_replica_identity(ReplicaIdentityKey *key);
-static bool hash_replica_identity_compare(ReplicaIdentityKey *a,
-										  ReplicaIdentityKey *b);
+	hashkey = hash_combine(hashkey, hash_uint32(relid));
 
-/* Define parameters for replica identity hash table code generation. */
-#define SH_PREFIX		replica_identity
-#define SH_ELEMENT_TYPE	ReplicaIdentityEntry
-#define SH_KEY_TYPE		ReplicaIdentityKey *
-#define	SH_KEY			keydata
-#define SH_HASH_KEY(tb, key)	hash_replica_identity(key)
-#define SH_EQUAL(tb, a, b)		hash_replica_identity_compare(a, b)
-#define SH_STORE_HASH
-#define SH_GET_HASH(tb, a) (a)->hash
-#define	SH_SCOPE		static inline
-#define SH_DECLARE
-#define SH_DEFINE
-#include "lib/simplehash.h"
+	for (i = 0; i < data->ncols; i++)
+	{
+		uint32		hkey;
 
-#define REPLICA_IDENTITY_INITIAL_SIZE 128
-#define REPLICA_IDENTITY_CLEANUP_THRESHOLD 1024
+		if (data->colstatus[i] == LOGICALREP_COLUMN_NULL)
+			continue;
 
-static replica_identity_hash *replica_identity_table = NULL;
+		if (!bms_is_member(i, relentry->remoterel.attkeys))
+			continue;
+
+		hkey = hash_any((const unsigned char *) data->colvalues[i].data,
+						data->colvalues[i].len);
+		hashkey = hash_combine(hashkey, hkey);
+	}
+
+	return hashkey;
+}
 
 static void write_internal_dependencies(StringInfo s, List *depends_on_xids);
 
@@ -669,135 +677,130 @@ static TransApplyAction get_transaction_apply_action(TransactionId xid,
 													 ParallelApplyWorkerInfo **winfo);
 
 static void replorigin_reset(int code, Datum arg);
+static void dependency_dsa_detach(int code, Datum arg);
+static void ensure_dependency_dshash(void);
 
-/*
- * Compute the hash value for entries in the replica_identity_table.
- */
-static uint32
-hash_replica_identity(ReplicaIdentityKey *key)
+/* parameters for the RI dependency shared hash table */
+static const dshash_parameters dependency_dsh_params =
 {
-	int			i;
-	uint32		hashkey = 0;
+	sizeof(ReplicaIdentityKey),
+	sizeof(ReplicaIdentityEntry),
+	dshash_memcmp,
+	dshash_memhash,
+	dshash_memcpy,
+	LWTRANCHE_DEPENDENCY_APPLY_DSA
+};
 
-	hashkey = hash_combine(hashkey, hash_uint32(key->relid));
-
-	for (i = 0; i < key->data->ncols; i++)
-	{
-		uint32		hkey;
-
-		if (key->data->colstatus[i] == LOGICALREP_COLUMN_NULL)
-			continue;
-
-		hkey = hash_any((const unsigned char *) key->data->colvalues[i].data,
-						key->data->colvalues[i].len);
-		hashkey = hash_combine(hashkey, hkey);
-	}
-
-	return hashkey;
-}
+static dsa_area *dependency_dsa_area = NULL;
+static dshash_table *dependency_dshash = NULL;
 
 /*
- * Compare two entries in the replica_identity_table.
- */
-static bool
-hash_replica_identity_compare(ReplicaIdentityKey *a, ReplicaIdentityKey *b)
-{
-	if (a->relid != b->relid ||
-		a->data->ncols != b->data->ncols)
-		return false;
-
-	for (int i = 0; i < a->data->ncols; i++)
-	{
-		if (a->data->colstatus[i] != b->data->colstatus[i])
-			return false;
-
-		if (a->data->colvalues[i].len != b->data->colvalues[i].len)
-			return false;
-
-		if (strcmp(a->data->colvalues[i].data, b->data->colvalues[i].data))
-			return false;
-
-		elog(DEBUG1, "conflicting key %s", a->data->colvalues[i].data);
-	}
-
-	return true;
-}
-
-/*
- * Free resources associated with a replica identity key.
+ * Allocate dependency hash table on the shared memory, or attach to it.
+ *
+ * It is always called by a leader apply worker first, then called by parallel
+ * workers.
  */
 static void
-free_replica_identity_key(ReplicaIdentityKey *key)
+ensure_dependency_dshash(void)
 {
-	Assert(key);
+	MemoryContext oldcontext;
 
-	pfree(key->data->colvalues);
-	pfree(key->data->colstatus);
-	pfree(key->data);
-	pfree(key);
+	/* Already initialized */
+	if (dependency_dshash)
+		return;
+
+	/* XXX: is it OK to swtich the context only at the */
+	oldcontext = MemoryContextSwitchTo(ApplyContext);
+
+	/* Parallel apply worker should attach to existing dsa and dshash */
+	if (am_parallel_apply_worker())
+	{
+		Assert(MyParallelShared->dependency_dsa_handle != DSA_HANDLE_INVALID &&
+			   MyParallelShared->dependency_dshash_handle != DSHASH_HANDLE_INVALID);
+
+		dependency_dsa_area = dsa_attach(MyParallelShared->dependency_dsa_handle);
+		dsa_pin_mapping(dependency_dsa_area);
+		dependency_dshash = dshash_attach(dependency_dsa_area, &dependency_dsh_params,
+								  MyParallelShared->dependency_dshash_handle, NULL);
+	}
+	else
+	{
+		/* Leader apply worker should create dsa and dshash */
+		dependency_dsa_area = dsa_create(LWTRANCHE_DEPENDENCY_APPLY_DSA);
+		dsa_pin(dependency_dsa_area);
+		dsa_pin_mapping(dependency_dsa_area);
+		dependency_dshash = dshash_create(dependency_dsa_area, &dependency_dsh_params, NULL);
+	}
+
+	before_shmem_exit(dependency_dsa_detach, (Datum) 0);
+	MemoryContextSwitchTo(oldcontext);
+}
+
+/*
+ * Attach to the shared hash table for dependency tracking.
+ */
+void
+atach_dependency_hash(dsa_handle *out_dsa, dshash_table_handle *out_hash)
+{
+	Assert(dependency_dsa_area && dependency_dshash);
+
+	*out_dsa = dsa_get_handle(dependency_dsa_area);
+	*out_hash = dshash_get_hash_table_handle(dependency_dshash);
 }
 
 /*
  * Clean up hash table entries associated with the given transaction IDs.
+ *
+ * XXX: do we have to retain this? Or it is enough done by parallel workers?
  */
 static void
 cleanup_replica_identity_table(List *committed_xid)
 {
-	replica_identity_iterator i;
+	dshash_seq_status hstat;
 	ReplicaIdentityEntry *rientry;
+
+	if (!dependency_dshash)
+		return;
 
 	if (!committed_xid)
 		return;
 
-	replica_identity_start_iterate(replica_identity_table, &i);
-	while ((rientry = replica_identity_iterate(replica_identity_table, &i)) != NULL)
+	dshash_seq_init(&hstat, dependency_dshash, true);
+	while ((rientry = dshash_seq_next(&hstat)) != NULL)
 	{
 		if (!list_member_xid(committed_xid, rientry->remote_xid))
 			continue;
 
 		/* Clean up the hash entry for committed transaction */
-		free_replica_identity_key(rientry->keydata);
-		replica_identity_delete_item(replica_identity_table, rientry);
+		dshash_delete_current(&hstat);
 	}
+	dshash_seq_term(&hstat);
 }
 
 /*
- * Check committed transactions and clean up corresponding entries in the hash
- * table.
+ * Remove all hash table entries associated with the given transaction ID.
+ *
+ * This is called when a transaction is committed by parallel apply workers.
  */
-static void
-cleanup_committed_replica_identity_entries(void)
+void
+dependency_cleanup_for_xid(TransactionId xid)
 {
-	dlist_mutable_iter iter;
-	List	   *committed_xids = NIL;
+	dshash_seq_status hstat;
+	ReplicaIdentityEntry *rientry;
 
-	dlist_foreach_modify(iter, &lsn_mapping)
+	if (!dependency_dshash)
+		return;
+
+	dshash_seq_init(&hstat, dependency_dshash, true);
+	while ((rientry = dshash_seq_next(&hstat)) != NULL)
 	{
-		FlushPosition *pos =
-			dlist_container(FlushPosition, node, iter.cur);
-		bool		skipped_write;
-
-		if (!TransactionIdIsValid(pos->pa_remote_xid) ||
-			!XLogRecPtrIsInvalid(pos->local_end))
+		if (!TransactionIdEquals(rientry->remote_xid, xid))
 			continue;
 
-		pos->local_end = pa_get_last_commit_end(pos->pa_remote_xid, true,
-												&skipped_write);
-
-		elog(DEBUG1,
-			 "got commit end from parallel apply worker, "
-			 "txn: %u, remote_end %X/%X, local_end %X/%X",
-			 pos->pa_remote_xid, LSN_FORMAT_ARGS(pos->remote_end),
-			 LSN_FORMAT_ARGS(pos->local_end));
-
-		if (!skipped_write && XLogRecPtrIsInvalid(pos->local_end))
-			continue;
-
-		committed_xids = lappend_xid(committed_xids, pos->pa_remote_xid);
+		/* Clean up the hash entry for committed transaction */
+		dshash_delete_current(&hstat);
 	}
-
-	/* cleanup the entries for committed transactions */
-	cleanup_replica_identity_table(committed_xids);
+	dshash_seq_term(&hstat);
 }
 
 /*
@@ -844,8 +847,7 @@ check_dependency_on_replica_identity(Oid relid,
 									 List **depends_on_xids)
 {
 	LogicalRepRelMapEntry *relentry;
-	LogicalRepTupleData *ridata;
-	ReplicaIdentityKey *rikey;
+	ReplicaIdentityKey rikey;
 	ReplicaIdentityEntry *rientry;
 	MemoryContext oldctx;
 	int			n_ri;
@@ -894,53 +896,24 @@ check_dependency_on_replica_identity(Oid relid,
 
 	oldctx = MemoryContextSwitchTo(ApplyContext);
 
-	/* Allocate space for replica identity values */
-	ridata = palloc0_object(LogicalRepTupleData);
-	ridata->colvalues = palloc0_array(StringInfoData, n_ri);
-	ridata->colstatus = palloc0_array(char, n_ri);
-	ridata->ncols = n_ri;
-
-	for (int i_original = 0, i_ri = 0; i_original < original_data->ncols; i_original++)
-	{
-		StringInfo	original_colvalue = &original_data->colvalues[i_original];
-
-		if (!bms_is_member(i_original, relentry->remoterel.attkeys))
-			continue;
-
-		initStringInfoExt(&ridata->colvalues[i_ri], original_colvalue->len + 1);
-		appendStringInfoString(&ridata->colvalues[i_ri], original_colvalue->data);
-		ridata->colstatus[i_ri] = original_data->colstatus[i_original];
-		i_ri++;
-	}
-
-	rikey = palloc0_object(ReplicaIdentityKey);
-	rikey->relid = relid;
-	rikey->data = ridata;
+	rikey.relid = relid;
+	rikey.hash = build_hash(relid, original_data, relentry);
 
 	if (TransactionIdIsValid(new_depended_xid))
 	{
-		rientry = replica_identity_insert(replica_identity_table, rikey,
-										  &found);
+		rientry = dshash_find_or_insert(dependency_dshash, &rikey, &found);
 
-		/*
-		 * Release the key built to search the entry, if the entry already
-		 * exists. Otherwise, initialize the remote_xid.
-		 */
+		/* Reuse the existing entry if found */
 		if (found)
 		{
 			elog(DEBUG1, "found conflicting replica identity change from %u",
 				 rientry->remote_xid);
-
-			free_replica_identity_key(rikey);
 		}
 		else
 			rientry->remote_xid = InvalidTransactionId;
 	}
 	else
-	{
-		rientry = replica_identity_lookup(replica_identity_table, rikey);
-		free_replica_identity_key(rikey);
-	}
+		rientry = dshash_find(dependency_dshash, &rikey, true);
 
 	MemoryContextSwitchTo(oldctx);
 
@@ -969,9 +942,12 @@ check_dependency_on_replica_identity(Oid relid,
 	 */
 	else if (!TransactionIdIsValid(rientry->remote_xid))
 	{
-		free_replica_identity_key(rientry->keydata);
-		replica_identity_delete_item(replica_identity_table, rientry);
+		dshash_delete_entry(dependency_dshash, rientry);
+		rientry = NULL;
 	}
+
+	if (rientry)
+		dshash_release_lock(dependency_dshash, rientry);
 }
 
 /*
@@ -982,25 +958,25 @@ static void
 find_all_dependencies_on_rel(LogicalRepRelId relid, TransactionId new_depended_xid,
 							 List **depends_on_xids)
 {
-	replica_identity_iterator i;
+	dshash_seq_status hstat;
 	ReplicaIdentityEntry *rientry;
 
 	Assert(depends_on_xids);
 
-	replica_identity_start_iterate(replica_identity_table, &i);
-	while ((rientry = replica_identity_iterate(replica_identity_table, &i)) != NULL)
+	Assert(dependency_dshash);
+
+	dshash_seq_init(&hstat, dependency_dshash, true);
+	while ((rientry = dshash_seq_next(&hstat)) != NULL)
 	{
 		Assert(TransactionIdIsValid(rientry->remote_xid));
 
-		if (rientry->keydata->relid != relid)
+		if (rientry->keydata.relid != relid)
 			continue;
 
 		/* Clean up the hash entry for committed transaction while on it */
 		if (pa_transaction_committed(rientry->remote_xid))
 		{
-			free_replica_identity_key(rientry->keydata);
-			replica_identity_delete_item(replica_identity_table, rientry);
-
+			dshash_delete_current(&hstat);
 			continue;
 		}
 
@@ -1008,6 +984,7 @@ find_all_dependencies_on_rel(LogicalRepRelId relid, TransactionId new_depended_x
 														   &rientry->remote_xid,
 														   new_depended_xid);
 	}
+	dshash_seq_term(&hstat);
 }
 
 /*
@@ -1081,14 +1058,6 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 	/* Only the leader checks dependencies and schedules the parallel apply */
 	if (!am_leader_apply_worker())
 		return;
-
-	if (!replica_identity_table)
-		replica_identity_table = replica_identity_create(ApplyContext,
-														 REPLICA_IDENTITY_INITIAL_SIZE,
-														 NULL);
-
-	if (replica_identity_table->members >= REPLICA_IDENTITY_CLEANUP_THRESHOLD)
-		cleanup_committed_replica_identity_entries();
 
 	switch (action)
 	{
@@ -1870,6 +1839,8 @@ apply_handle_begin(StringInfo s)
 
 	maybe_start_skipping_changes(begin_data.final_lsn);
 
+	ensure_dependency_dshash();
+
 	pa_allocate_worker(remote_xid, false);
 
 	apply_action = get_transaction_apply_action(remote_xid, &winfo);
@@ -2488,7 +2459,10 @@ apply_handle_stream_start(StringInfo s)
 
 	/* Try to allocate a worker for the streaming transaction. */
 	if (first_segment)
+	{
+		ensure_dependency_dshash();
 		pa_allocate_worker(stream_xid, true);
+	}
 
 	apply_action = get_transaction_apply_action(stream_xid, &winfo);
 
@@ -6617,6 +6591,22 @@ InitializeLogRepWorker(void)
 						MySubscription->name)));
 
 	CommitTransactionCommand();
+}
+
+/*
+ * Detach from dependency hash table
+ */
+static void
+dependency_dsa_detach(int code, Datum arg)
+{
+	if (dependency_dshash)
+	{
+		/* XXX: do we have to detach or destory? */
+		dshash_detach(dependency_dshash);
+	}
+
+	if (dependency_dsa_area)
+		dsa_detach(dependency_dsa_area);
 }
 
 /*

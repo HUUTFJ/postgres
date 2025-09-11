@@ -428,6 +428,8 @@ pa_setup_dsm(ParallelApplyWorkerInfo *winfo)
 	shared->parallel_apply_dsa_handle = parallel_apply_dsa_handle;
 	shared->parallelized_txns_handle = parallelized_txns_handle;
 	shared->has_dependent_txn = false;
+	shared->dependency_dsa_handle = DSA_HANDLE_INVALID;
+	shared->dependency_dshash_handle = DSHASH_HANDLE_INVALID;
 
 	shm_toc_insert(toc, PARALLEL_APPLY_KEY_SHARED, shared);
 
@@ -451,6 +453,10 @@ pa_setup_dsm(ParallelApplyWorkerInfo *winfo)
 	/* Return results to caller. */
 	winfo->dsm_seg = seg;
 	winfo->shared = shared;
+
+	/* Set dependency hash table handler */
+	atach_dependency_hash(&winfo->shared->dependency_dsa_handle,
+						   &winfo->shared->dependency_dshash_handle);
 
 	return true;
 }
@@ -1728,6 +1734,11 @@ pa_stream_abort(LogicalRepStreamAbortData *abort_data)
 		pa_set_xact_state(MyParallelShared, PARALLEL_TRANS_FINISHED);
 
 		/*
+		 * XXX: no need to remove dependency hash entries because it is not
+		 * used for streamed transactions
+		 */
+
+		 /*
 		 * Release the lock as we might be processing an empty streaming
 		 * transaction in which case the lock won't be released during
 		 * transaction rollback.
@@ -2061,6 +2072,9 @@ pa_commit_transaction(void)
 {
 	TransactionId xid = MyParallelShared->xid;
 	bool		has_dependent_txn;
+
+	/* Remove the transaction from the dependency hash table */
+	dependency_cleanup_for_xid(xid);
 
 	SpinLockAcquire(&MyParallelShared->mutex);
 	MyParallelShared->xact_state = PARALLEL_TRANS_FINISHED;
