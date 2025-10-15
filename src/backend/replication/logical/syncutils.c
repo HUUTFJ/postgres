@@ -150,7 +150,8 @@ FetchRelationStates(bool *started_tx)
 		}
 
 		/* Fetch tables and sequences that are in non-ready state. */
-		rstates = GetSubscriptionRelations(MySubscription->oid, true);
+		rstates = GetSubscriptionRelations(MySubscription->oid, true, false,
+										   true);
 
 		/* Allocate the tracking info in a permanent memory context. */
 		oldctx = MemoryContextSwitchTo(CacheMemoryContext);

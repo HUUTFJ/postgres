@@ -196,6 +196,16 @@ logicalrep_relmap_update(LogicalRepRelation *remoterel)
 		entry->remoterel.atttyps[i] = remoterel->atttyps[i];
 	}
 	entry->remoterel.replident = remoterel->replident;
+
+	/*
+	 * XXX The walsender currently does not transmit the relkind of the remote
+	 * relation when replicating changes. Since we support replicating only
+	 * table changes at present, we default to initializing relkind as
+	 * RELKIND_RELATION.
+	 */
+	entry->remoterel.relkind = remoterel->relkind
+		? remoterel->relkind : RELKIND_RELATION;
+
 	entry->remoterel.attkeys = bms_copy(remoterel->attkeys);
 	MemoryContextSwitchTo(oldctx);
 }
@@ -425,6 +435,7 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 
 		/* Check for supported relkind. */
 		CheckSubscriptionRelkind(entry->localrel->rd_rel->relkind,
+								 remoterel->relkind,
 								 remoterel->nspname, remoterel->relname);
 
 		/*
