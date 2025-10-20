@@ -82,6 +82,22 @@ typedef struct SubscriptionRelState
 	char		state;
 } SubscriptionRelState;
 
+typedef struct LogicalRepSeqHashKey
+{
+	const char *seqname;
+	const char *nspname;
+} LogicalRepSeqHashKey;
+
+typedef struct LogicalRepSequenceInfo
+{
+	char	   *seqname;
+	char	   *nspname;
+	Oid			localrelid;
+	bool		remote_seq_queried;
+	Oid			seqowner;
+	bool		entry_valid;
+} LogicalRepSequenceInfo;
+
 extern void AddSubscriptionRelState(Oid subid, Oid relid, char state,
 									XLogRecPtr sublsn, bool retain_lock);
 extern void UpdateSubscriptionRelState(Oid subid, Oid relid, char state,

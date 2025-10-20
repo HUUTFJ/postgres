@@ -246,19 +246,23 @@ WaitForReplicationWorkerAttach(LogicalRepWorker *worker,
 
 /*
  * Walks the workers array and searches for one that matches given
- * subscription id and relid.
+ * subscription id, relid and type.
  *
- * We are only interested in the leader apply worker or table sync worker.
+ * For apply workers and sequence sync workers, the relid should be set to
+ * InvalidOid, as they manage changes across all tables and sequences. For table
+ * sync workers, the relid should be set to the OID of the relation being
+ * synchronized.
  */
 LogicalRepWorker *
-logicalrep_worker_find(Oid subid, Oid relid, bool only_running)
+logicalrep_worker_find(Oid subid, Oid relid, LogicalRepWorkerType wtype,
+					   bool only_running)
 {
 	int			i;
 	LogicalRepWorker *res = NULL;
 
 	Assert(LWLockHeldByMe(LogicalRepWorkerLock));
 
-	/* Search for attached worker for a given subscription id. */
+	/* Search for the attached worker matching the specified criteria. */
 	for (i = 0; i < max_logical_replication_workers; i++)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
@@ -268,7 +272,7 @@ logicalrep_worker_find(Oid subid, Oid relid, bool only_running)
 			continue;
 
 		if (w->in_use && w->subid == subid && w->relid == relid &&
-			(!only_running || w->proc))
+			w->type == wtype && (!only_running || w->proc))
 		{
 			res = w;
 			break;
@@ -329,6 +333,7 @@ logicalrep_worker_launch(LogicalRepWorkerType wtype,
 	int			nparallelapplyworkers;
 	TimestampTz now;
 	bool		is_tablesync_worker = (wtype == WORKERTYPE_TABLESYNC);
+	bool		is_sequencesync_worker = (wtype == WORKERTYPE_SEQUENCESYNC);
 	bool		is_parallel_apply_worker = (wtype == WORKERTYPE_PARALLEL_APPLY);
 
 	/*----------
@@ -417,7 +422,8 @@ retry:
 	 * sync worker limit per subscription. So, just return silently as we
 	 * might get here because of an otherwise harmless race condition.
 	 */
-	if (is_tablesync_worker && nsyncworkers >= max_sync_workers_per_subscription)
+	if ((is_tablesync_worker || is_sequencesync_worker) &&
+		nsyncworkers >= max_sync_workers_per_subscription)
 	{
 		LWLockRelease(LogicalRepWorkerLock);
 		return false;
@@ -506,8 +512,16 @@ retry:
 			memcpy(bgw.bgw_extra, &subworker_dsm, sizeof(dsm_handle));
 			break;
 
+		case WORKERTYPE_SEQUENCESYNC:
+			snprintf(bgw.bgw_function_name, BGW_MAXLEN, "SequenceSyncWorkerMain");
+			snprintf(bgw.bgw_name, BGW_MAXLEN,
+					 "logical replication sequencesync worker for subscription %u",
+					 subid);
+			snprintf(bgw.bgw_type, BGW_MAXLEN, "logical replication sequencesync worker");
+			break;
+
 		case WORKERTYPE_TABLESYNC:
-			snprintf(bgw.bgw_function_name, BGW_MAXLEN, "TablesyncWorkerMain");
+			snprintf(bgw.bgw_function_name, BGW_MAXLEN, "TableSyncWorkerMain");
 			snprintf(bgw.bgw_name, BGW_MAXLEN,
 					 "logical replication tablesync worker for subscription %u sync %u",
 					 subid,
@@ -628,15 +642,18 @@ logicalrep_worker_stop_internal(LogicalRepWorker *worker, int signo)
 
 /*
  * Stop the logical replication worker for subid/relid, if any.
+ *
+ * Similar to logicalrep_worker_find, relid should be set to a valid OID only
+ * for table sync workers.
  */
 void
-logicalrep_worker_stop(Oid subid, Oid relid)
+logicalrep_worker_stop(Oid subid, Oid relid, LogicalRepWorkerType wtype)
 {
 	LogicalRepWorker *worker;
 
 	LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
 
-	worker = logicalrep_worker_find(subid, relid, false);
+	worker = logicalrep_worker_find(subid, relid, wtype, false);
 
 	if (worker)
 	{
@@ -703,7 +720,10 @@ logicalrep_worker_wakeup(Oid subid, Oid relid)
 
 	LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
 
-	worker = logicalrep_worker_find(subid, relid, true);
+	worker = logicalrep_worker_find(subid, relid,
+									OidIsValid(relid)
+									? WORKERTYPE_TABLESYNC
+									: WORKERTYPE_APPLY, true);
 
 	if (worker)
 		logicalrep_worker_wakeup_ptr(worker);
@@ -836,6 +856,25 @@ logicalrep_launcher_onexit(int code, Datum arg)
 }
 
 /*
+ * Reset the last_seqsync_start_time of the sequencesync worker in the
+ * subscription's apply worker.
+ */
+void
+logicalrep_reset_seqsync_start_time(void)
+{
+	LogicalRepWorker *worker;
+
+	LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
+
+	worker = logicalrep_worker_find(MyLogicalRepWorker->subid, InvalidOid,
+									WORKERTYPE_APPLY, true);
+	if (worker)
+		worker->last_seqsync_start_time = 0;
+
+	LWLockRelease(LogicalRepWorkerLock);
+}
+
+/*
  * Cleanup function.
  *
  * Called on logical replication worker exit.
@@ -883,7 +922,7 @@ logicalrep_sync_worker_count(Oid subid)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
-		if (isTablesyncWorker(w) && w->subid == subid)
+		if (w->subid == subid && (isTableSyncWorker(w) || isSequenceSyncWorker(w)))
 			res++;
 	}
 
@@ -1260,7 +1299,8 @@ ApplyLauncherMain(Datum main_arg)
 				continue;
 
 			LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
-			w = logicalrep_worker_find(sub->oid, InvalidOid, false);
+			w = logicalrep_worker_find(sub->oid, InvalidOid, WORKERTYPE_APPLY,
+									   false);
 
 			if (w != NULL)
 			{
@@ -1596,7 +1636,7 @@ pg_stat_get_subscription(PG_FUNCTION_ARGS)
 		worker_pid = worker.proc->pid;
 
 		values[0] = ObjectIdGetDatum(worker.subid);
-		if (isTablesyncWorker(&worker))
+		if (isTableSyncWorker(&worker))
 			values[1] = ObjectIdGetDatum(worker.relid);
 		else
 			nulls[1] = true;
@@ -1635,6 +1675,9 @@ pg_stat_get_subscription(PG_FUNCTION_ARGS)
 				break;
 			case WORKERTYPE_PARALLEL_APPLY:
 				values[9] = CStringGetTextDatum("parallel apply");
+				break;
+			case WORKERTYPE_SEQUENCESYNC:
+				values[9] = CStringGetTextDatum("sequence synchronization");
 				break;
 			case WORKERTYPE_TABLESYNC:
 				values[9] = CStringGetTextDatum("table synchronization");

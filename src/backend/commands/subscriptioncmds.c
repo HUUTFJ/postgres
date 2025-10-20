@@ -1047,8 +1047,8 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
 				RemoveSubscriptionRel(sub->oid, relid);
 
 				/*
-				 * XXX Currently there is no sequencesync worker, so we only
-				 * stop tablesync workers.
+				 * A single sequencesync worker synchronizes all sequences, so
+				 * only stop workers when relation kind is not sequence.
 				 */
 				if (relkind != RELKIND_SEQUENCE)
 				{
@@ -1059,7 +1059,7 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
 
 					sub_remove_rels = lappend(sub_remove_rels, rel);
 
-					logicalrep_worker_stop(sub->oid, relid);
+					logicalrep_worker_stop(sub->oid, relid, WORKERTYPE_TABLESYNC);
 
 					/*
 					 * For READY state, we would have already dropped the
@@ -2087,7 +2087,7 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 	{
 		LogicalRepWorker *w = (LogicalRepWorker *) lfirst(lc);
 
-		logicalrep_worker_stop(w->subid, w->relid);
+		logicalrep_worker_stop(w->subid, w->relid, w->type);
 	}
 	list_free(subworkers);
 

@@ -16,6 +16,7 @@
 
 #include "catalog/pg_subscription_rel.h"
 #include "pgstat.h"
+#include "replication/logicallauncher.h"
 #include "replication/worker_internal.h"
 #include "storage/ipc.h"
 #include "utils/lsyscache.h"
@@ -46,8 +47,10 @@ static SyncingRelationsState relation_states_validity = SYNC_RELATIONS_STATE_NEE
  * Exit routine for synchronization worker.
  */
 pg_noreturn void
-FinishSyncWorker(void)
+FinishSyncWorker(LogicalRepWorkerType wtype)
 {
+	Assert(wtype == WORKERTYPE_TABLESYNC || wtype == WORKERTYPE_SEQUENCESYNC);
+
 	/*
 	 * Commit any outstanding transaction. This is the usual case, unless
 	 * there was nothing to do for the table.
@@ -62,14 +65,26 @@ FinishSyncWorker(void)
 	XLogFlush(GetXLogWriteRecPtr());
 
 	StartTransactionCommand();
-	ereport(LOG,
-			(errmsg("logical replication table synchronization worker for subscription \"%s\", table \"%s\" has finished",
-					MySubscription->name,
-					get_rel_name(MyLogicalRepWorker->relid))));
+	if (wtype == WORKERTYPE_TABLESYNC)
+		ereport(LOG,
+				errmsg("logical replication table synchronization worker for subscription \"%s\", table \"%s\" has finished",
+					   MySubscription->name,
+					   get_rel_name(MyLogicalRepWorker->relid)));
+	else
+		ereport(LOG,
+				errmsg("logical replication sequence synchronization worker for subscription \"%s\" has finished",
+					   MySubscription->name));
 	CommitTransactionCommand();
 
-	/* Find the leader apply worker and signal it. */
-	logicalrep_worker_wakeup(MyLogicalRepWorker->subid, InvalidOid);
+	/*
+	 * This is a clean exit of the sequencesync worker; reset the
+	 * last_seqsync_start_time.
+	 */
+	if (wtype == WORKERTYPE_SEQUENCESYNC)
+		logicalrep_reset_seqsync_start_time();
+	else
+		/* Find the leader apply worker and signal it. */
+		logicalrep_worker_wakeup(MyLogicalRepWorker->subid, InvalidOid);
 
 	/* Stop gracefully */
 	proc_exit(0);
@@ -85,7 +100,48 @@ InvalidateSyncingRelStates(Datum arg, int cacheid, uint32 hashvalue)
 }
 
 /*
- * Process possible state change(s) of relations that are being synchronized.
+ * Attempt to launch a sync worker (sequence or table) if there is a sync
+ * worker slot available and the retry interval has elapsed.
+ *
+ * nsyncworkers: Number of currently running sync workers for the subscription.
+ * relid:  InvalidOid for sequence sync worker, actual relid for table sync
+ * worker.
+ * last_start_time: Pointer to the last start time of the worker.
+ */
+void
+launch_sync_worker(int nsyncworkers, Oid relid, TimestampTz *last_start_time)
+{
+	/* If there is a free sync worker slot, start a new sync worker */
+	if (nsyncworkers < max_sync_workers_per_subscription)
+	{
+		TimestampTz now = GetCurrentTimestamp();
+
+		if (!(*last_start_time) ||
+			TimestampDifferenceExceeds(*last_start_time, now,
+									   wal_retrieve_retry_interval))
+		{
+			/*
+			 * Set the last_start_time even if we fail to start the worker, so
+			 * that we won't retry until wal_retrieve_retry_interval has
+			 * elapsed.
+			 */
+			*last_start_time = now;
+			(void) logicalrep_worker_launch((relid == InvalidOid) ? WORKERTYPE_SEQUENCESYNC : WORKERTYPE_TABLESYNC,
+											MyLogicalRepWorker->dbid,
+											MySubscription->oid,
+											MySubscription->name,
+											MyLogicalRepWorker->userid,
+											relid,
+											DSM_HANDLE_INVALID,
+											false);
+		}
+	}
+}
+
+/*
+ * Process possible state change(s) of relations that are being synchronized
+ * and start new tablesync workers for the newly added tables. Also, start a
+ * new sequencesync worker for the newly added sequences.
  */
 void
 ProcessSyncingRelations(XLogRecPtr current_lsn)
@@ -107,6 +163,12 @@ ProcessSyncingRelations(XLogRecPtr current_lsn)
 
 		case WORKERTYPE_APPLY:
 			ProcessSyncingTablesForApply(current_lsn);
+			ProcessSyncingSequencesForApply();
+			break;
+
+		case WORKERTYPE_SEQUENCESYNC:
+			/* Should never happen. */
+			elog(ERROR, "Sequence synchronization worker not expected to process relations");
 			break;
 
 		case WORKERTYPE_UNKNOWN:
@@ -116,18 +178,26 @@ ProcessSyncingRelations(XLogRecPtr current_lsn)
 }
 
 /*
- * Common code to fetch the up-to-date sync state info into the static lists.
+ * Common code to fetch the up-to-date sync state info for tables and sequences.
+ *
+ * The pg_subscription_rel catalog is shared by tables and sequences. Changes
+ * to either sequences or tables can affect the validity of relation states, so
+ * we identify non-ready tables and non-ready sequences together to ensure
+ * consistency.
  *
  * Returns true if subscription has 1 or more tables, else false.
- *
- * Note: If this function started the transaction (indicated by the parameter)
- * then it is the caller's responsibility to commit it.
  */
 bool
-FetchRelationStates(bool *started_tx)
+FetchRelationStates(bool *has_pending_sequences, bool *started_tx)
 {
+	/*
+	 * has_subtables and has_subsequences_non_ready is declared as static,
+	 * since the same value can be used until the system table is invalidated.
+	 */
 	static bool has_subtables = false;
+	static bool has_subsequences_non_ready = false;
 
+	*has_pending_sequences = false;
 	*started_tx = false;
 
 	if (relation_states_validity != SYNC_RELATIONS_STATE_VALID)
@@ -138,6 +208,7 @@ FetchRelationStates(bool *started_tx)
 		SubscriptionRelState *rstate;
 
 		relation_states_validity = SYNC_RELATIONS_STATE_REBUILD_STARTED;
+		has_subsequences_non_ready = false;
 
 		/* Clean the old lists. */
 		list_free_deep(table_states_not_ready);
@@ -150,7 +221,7 @@ FetchRelationStates(bool *started_tx)
 		}
 
 		/* Fetch tables and sequences that are in non-ready state. */
-		rstates = GetSubscriptionRelations(MySubscription->oid, true, false,
+		rstates = GetSubscriptionRelations(MySubscription->oid, true, true,
 										   true);
 
 		/* Allocate the tracking info in a permanent memory context. */
@@ -159,7 +230,12 @@ FetchRelationStates(bool *started_tx)
 		{
 			rstate = palloc(sizeof(SubscriptionRelState));
 			memcpy(rstate, lfirst(lc), sizeof(SubscriptionRelState));
-			table_states_not_ready = lappend(table_states_not_ready, rstate);
+
+			if (get_rel_relkind(rstate->relid) == RELKIND_SEQUENCE)
+				has_subsequences_non_ready = true;
+			else
+				table_states_not_ready = lappend(table_states_not_ready,
+												 rstate);
 		}
 		MemoryContextSwitchTo(oldctx);
 
@@ -183,6 +259,8 @@ FetchRelationStates(bool *started_tx)
 		if (relation_states_validity == SYNC_RELATIONS_STATE_REBUILD_STARTED)
 			relation_states_validity = SYNC_RELATIONS_STATE_VALID;
 	}
+
+	*has_pending_sequences = has_subsequences_non_ready;
 
 	return has_subtables;
 }

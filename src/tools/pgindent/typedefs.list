@@ -1629,6 +1629,8 @@ LogicalRepRelId
 LogicalRepRelMapEntry
 LogicalRepRelation
 LogicalRepRollbackPreparedTxnData
+LogicalRepSeqHashKey
+LogicalRepSequenceInfo
 LogicalRepStreamAbortData
 LogicalRepTupleData
 LogicalRepTyp
