@@ -242,6 +242,30 @@ ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> RENAME TO <
     </listitem>
    </varlistentry>
 
+   <varlistentry id="sql-altersubscription-params-refresh-sequences">
+    <term><literal>REFRESH SEQUENCES</literal></term>
+    <listitem>
+     <para>
+      Re-synchronize sequence data with the publisher. Unlike
+      <link linkend="sql-altersubscription-params-refresh-publication">
+      <literal>ALTER SUBSCRIPTION ... REFRESH PUBLICATION</literal></link> which
+      only synchronizes newly added sequences, <literal>REFRESH SEQUENCES</literal>
+      will re-synchronize the sequence data for all subscribed sequences. It
+      does not add or remove the missing publication sequences from the
+      subscription.
+     </para>
+     <para>
+      See <xref linkend="sequence-definition-mismatches"/> for
+      recommendations on how to handle any warnings about sequence definition
+      differences between the publisher and the subscriber.
+     </para>
+     <para>
+      See <xref linkend="sequences-out-of-sync"/> for recommendations on how to
+      identify and handle out-of-sync sequences.
+     </para>
+    </listitem>
+   </varlistentry>
+
    <varlistentry id="sql-altersubscription-params-enable">
     <term><literal>ENABLE</literal></term>
     <listitem>

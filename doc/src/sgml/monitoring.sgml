@@ -2045,8 +2045,9 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       </para>
       <para>
        Type of the subscription worker process.  Possible types are
-       <literal>apply</literal>, <literal>parallel apply</literal>, and
-       <literal>table synchronization</literal>.
+       <literal>apply</literal>, <literal>parallel apply</literal>,
+       <literal>table synchronization</literal>, and
+       <literal>sequence synchronization</literal>.
       </para></entry>
      </row>
 
@@ -2189,6 +2190,15 @@ description | Waiting for a newly initialized WAL file to reach durable storage
        conflict resulting in an apply error will be counted in both
        <literal>apply_error_count</literal> and the corresponding conflict
        count (e.g., <literal>confl_*</literal>).
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>sequence_sync_error_count</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of times an error occurred during the sequence synchronization
       </para></entry>
      </row>
 

@@ -228,7 +228,7 @@ CREATE SUBSCRIPTION <replaceable class="parameter">subscription_name</replaceabl
           the initial synchronization requires all data types to have binary
           send and receive functions, otherwise the synchronization will fail
           (see <xref linkend="sql-createtype"/> for more about send/receive
-          functions).
+          functions). This parameter is not applicable for sequences.
          </para>
 
          <para>
@@ -265,6 +265,12 @@ CREATE SUBSCRIPTION <replaceable class="parameter">subscription_name</replaceabl
           <literal>copy_data = true</literal> can interact with the
           <literal>origin</literal> parameter.
          </para>
+         <para>
+          See <xref linkend="sequence-definition-mismatches"/>
+          for recommendations on how to handle any warnings about sequence
+          definition differences between the publisher and the subscriber,
+          which might occur when <literal>copy_data = true</literal>.
+         </para>
         </listitem>
        </varlistentry>
 
@@ -280,6 +286,7 @@ CREATE SUBSCRIPTION <replaceable class="parameter">subscription_name</replaceabl
           temporary files and applied after the transaction is committed. Note
           that if an error happens in a parallel apply worker, the finish LSN
           of the remote transaction might not be reported in the server log.
+          This parameter is not applicable for sequences.
          </para>
 
          <caution>
@@ -310,7 +317,8 @@ CREATE SUBSCRIPTION <replaceable class="parameter">subscription_name</replaceabl
           The value of this parameter overrides the
           <xref linkend="guc-synchronous-commit"/> setting within this
           subscription's apply worker processes.  The default value
-          is <literal>off</literal>.
+          is <literal>off</literal>. This parameter is not applicable for
+          sequences.
          </para>
 
          <para>
@@ -340,7 +348,8 @@ CREATE SUBSCRIPTION <replaceable class="parameter">subscription_name</replaceabl
         <listitem>
          <para>
           Specifies whether two-phase commit is enabled for this subscription.
-          The default is <literal>false</literal>.
+          The default is <literal>false</literal>. This parameter is not
+          applicable for sequences.
          </para>
 
          <para>
@@ -417,6 +426,7 @@ CREATE SUBSCRIPTION <replaceable class="parameter">subscription_name</replaceabl
           changes that don't have an origin. Setting <literal>origin</literal>
           to <literal>any</literal> means that the publisher sends changes
           regardless of their origin. The default is <literal>any</literal>.
+          This parameter is not applicable for sequences.
          </para>
          <para>
           See <xref linkend="sql-createsubscription-notes"/> for details of how
@@ -449,7 +459,8 @@ CREATE SUBSCRIPTION <replaceable class="parameter">subscription_name</replaceabl
           <xref linkend="conflict-update-deleted"/> is enabled, and a physical
           replication slot named <quote><literal>pg_conflict_detection</literal></quote>
           is created on the subscriber to prevent the information for detecting
-          conflicts from being removed.
+          conflicts from being removed. This parameter is not applicable for
+          sequences.
          </para>
 
          <para>
