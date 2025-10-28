@@ -564,6 +564,8 @@ typedef struct ReplicaIdentityEntry
 	TransactionId remote_xid;
 } ReplicaIdentityEntry;
 
+static List *replicaIdentityKeylist = NIL;
+
 /*
  * Build a hash value from the oid and replica identity columns.
  *
@@ -783,24 +785,38 @@ cleanup_replica_identity_table(List *committed_xid)
  * This is called when a transaction is committed by parallel apply workers.
  */
 void
-dependency_cleanup_for_xid(TransactionId xid)
+dependency_cleanup_for_xid(void)
 {
-	dshash_seq_status hstat;
-	ReplicaIdentityEntry *rientry;
-
 	if (!dependency_dshash)
 		return;
 
-	dshash_seq_init(&hstat, dependency_dshash, true);
-	while ((rientry = dshash_seq_next(&hstat)) != NULL)
-	{
-		if (!TransactionIdEquals(rientry->remote_xid, xid))
-			continue;
+	if (replicaIdentityKeylist->length == 0)
+		return;
 
-		/* Clean up the hash entry for committed transaction */
-		dshash_delete_current(&hstat);
+	foreach_ptr(ReplicaIdentityKey, rikey, replicaIdentityKeylist)
+	{
+		bool	removed PG_USED_FOR_ASSERTS_ONLY;
+
+		removed = dshash_delete_key(dependency_dshash, rikey);
+		Assert(removed);
 	}
-	dshash_seq_term(&hstat);
+
+	// dshash_seq_status hstat;
+	// ReplicaIdentityEntry *rientry;
+
+	// if (!dependency_dshash)
+	// 	return;
+
+	// dshash_seq_init(&hstat, dependency_dshash, true);
+	// while ((rientry = dshash_seq_next(&hstat)) != NULL)
+	// {
+	// 	if (!TransactionIdEquals(rientry->remote_xid, xid))
+	// 		continue;
+
+	// 	/* Clean up the hash entry for committed transaction */
+	// 	dshash_delete_current(&hstat);
+	// }
+	// dshash_seq_term(&hstat);
 }
 
 /*

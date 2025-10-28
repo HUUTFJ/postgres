@@ -374,7 +374,7 @@ extern void pa_commit_transaction(void);
 extern void pa_wait_for_depended_transaction(TransactionId xid);
 
 extern void atach_dependency_hash(dsa_handle *out_dsa, dshash_table_handle *out_hash);
-extern void dependency_cleanup_for_xid(TransactionId xid);
+extern void dependency_cleanup_for_xid(void);
 
 #define isParallelApplyWorker(worker) ((worker)->in_use && \
 									   (worker)->type == WORKERTYPE_PARALLEL_APPLY)

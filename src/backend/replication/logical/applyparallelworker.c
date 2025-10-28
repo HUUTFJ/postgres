@@ -2074,7 +2074,7 @@ pa_commit_transaction(void)
 	bool		has_dependent_txn;
 
 	/* Remove the transaction from the dependency hash table */
-	dependency_cleanup_for_xid(xid);
+	dependency_cleanup_for_xid();
 
 	SpinLockAcquire(&MyParallelShared->mutex);
 	MyParallelShared->xact_state = PARALLEL_TRANS_FINISHED;
