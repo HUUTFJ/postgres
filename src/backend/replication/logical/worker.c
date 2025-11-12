@@ -485,6 +485,7 @@ static List *on_commit_wakeup_workers_subids = NIL;
 bool		in_remote_transaction = false;
 static XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
 static TransactionId remote_xid = InvalidTransactionId;
+static TransactionId last_remote_xid = InvalidTransactionId;
 
 /* fields valid only when processing streamed transaction */
 static bool in_streamed_transaction = false;
@@ -669,6 +670,11 @@ static TransApplyAction get_transaction_apply_action(TransactionId xid,
 													 ParallelApplyWorkerInfo **winfo);
 
 static void replorigin_reset(int code, Datum arg);
+
+static bool send_internal_dependencies(ParallelApplyWorkerInfo *winfo,
+									 StringInfo s);
+
+static bool build_dependency_with_last_committed_txn(ParallelApplyWorkerInfo *winfo);
 
 /*
  * Compute the hash value for entries in the replica_identity_table.
@@ -1189,18 +1195,7 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 	/* Build the dependency message used to send to parallel apply worker */
 	write_internal_dependencies(&dependencies, depends_on_xids);
 
-	if (!winfo->serialize_changes)
-	{
-		if (pa_send_data(winfo, dependencies.len, dependencies.data))
-			return;
-
-		pa_switch_to_partial_serialize(winfo, true);
-	}
-
-	/* Skip writing the first internal message flag */
-	dependencies.cursor++;
-	stream_write_change(LOGICAL_REP_MSG_INTERNAL_DEPENDENCY,
-						&dependencies);
+	(void) send_internal_dependencies(winfo, &dependencies);
 }
 
 /*
@@ -1908,6 +1903,64 @@ apply_handle_begin(StringInfo s)
 }
 
 /*
+ * Send an INTERNAL_DEPENDENCY message to a parallel apply worker.
+ *
+ * Returns false if we switched to the serialize mode to send the message,
+ * true otherwise.
+ */
+static bool
+send_internal_dependencies(ParallelApplyWorkerInfo *winfo, StringInfo s)
+{
+	Assert(s->data[0] == PARALLEL_APPLY_INTERNAL_MESSAGE);
+	Assert(s->data[1] == LOGICAL_REP_MSG_INTERNAL_DEPENDENCY);
+
+	if (!winfo->serialize_changes)
+	{
+		if (pa_send_data(winfo, s->len, s->data))
+			return true;
+
+		pa_switch_to_partial_serialize(winfo, true);
+	}
+
+	/* Skip writing the first internal message flag */
+	s->cursor++;
+	stream_write_change(LOGICAL_REP_MSG_INTERNAL_DEPENDENCY, s);
+
+	return false;
+}
+
+/*
+ * Make a dependency between this and the lastly committed transaction.
+ *
+ * This function ensures that the commit ordering handled by parallel apply
+ * workers is preserved. Returns false if we switched to the serialize mode to
+ * send the massage, true otherwise.
+ */
+static bool
+build_dependency_with_last_committed_txn(ParallelApplyWorkerInfo *winfo)
+{
+	StringInfoData dependency_msg;
+	bool 			ret;
+
+	/* Skip if transactions have not been applied yet */
+	if (!TransactionIdIsValid(last_remote_xid))
+		return true;
+
+	/* Build the dependency message used to send to parallel apply worker */
+	initStringInfo(&dependency_msg);
+
+	pq_sendbyte(&dependency_msg, PARALLEL_APPLY_INTERNAL_MESSAGE);
+	pq_sendbyte(&dependency_msg, LOGICAL_REP_MSG_INTERNAL_DEPENDENCY);
+	pq_sendint32(&dependency_msg, 1);
+	pq_sendint32(&dependency_msg, last_remote_xid);
+
+	ret = send_internal_dependencies(winfo, &dependency_msg);
+
+	pfree(dependency_msg.data);
+	return ret;
+}
+
+/*
  * Handle COMMIT message.
  *
  * TODO, support tracking of multiple origins
@@ -1942,6 +1995,20 @@ apply_handle_commit(StringInfo s)
 		case TRANS_LEADER_SEND_TO_PARALLEL:
 			Assert(winfo);
 
+			/*
+			 * Mark this transaction as parallelized. This ensures that
+			 * upcoming transactions wait until this transaction is
+			 * committed.
+			 */
+			pa_add_parallellized_transaction(remote_xid);
+
+			/*
+			 * Build a dependency between this transaction and lastly committed
+			 * transaction to preserve the commit order.
+			 */
+			if (!build_dependency_with_last_committed_txn(winfo))
+				goto partial_serialize;
+
 			if (pa_send_data(winfo, s->len, s->data))
 			{
 				/* Finish processing the transaction. */
@@ -1956,6 +2023,7 @@ apply_handle_commit(StringInfo s)
 			pa_switch_to_partial_serialize(winfo, true);
 
 			/* fall through */
+partial_serialize:
 		case TRANS_LEADER_PARTIAL_SERIALIZE:
 			Assert(winfo);
 
@@ -1990,6 +2058,9 @@ apply_handle_commit(StringInfo s)
 			elog(ERROR, "unexpected apply action: %d", (int) apply_action);
 			break;
 	}
+
+	/* Cache the remote_xid */
+	last_remote_xid = remote_xid;
 
 	remote_xid = InvalidTransactionId;
 	in_remote_transaction = false;
@@ -3188,6 +3259,16 @@ apply_handle_stream_commit(StringInfo s)
 		case TRANS_LEADER_SEND_TO_PARALLEL:
 			Assert(winfo);
 
+			/*
+			 * Apart from non-streaming case, no need to mark this transaction
+			 * as parallelized. Because the leader waits until the streamed
+			 * transaction is committed thus commit ordering is always
+			 * preserved.
+			 */
+
+			if (!build_dependency_with_last_committed_txn(winfo))
+				goto partial_serialize;
+
 			if (pa_send_data(winfo, s->len, s->data))
 			{
 				/* Finish processing the streaming transaction. */
@@ -3202,6 +3283,7 @@ apply_handle_stream_commit(StringInfo s)
 			pa_switch_to_partial_serialize(winfo, true);
 
 			/* fall through */
+partial_serialize:
 		case TRANS_LEADER_PARTIAL_SERIALIZE:
 			Assert(winfo);
 
@@ -3243,6 +3325,9 @@ apply_handle_stream_commit(StringInfo s)
 			elog(ERROR, "unexpected apply action: %d", (int) apply_action);
 			break;
 	}
+
+	/* Cache the remote xid */
+	last_remote_xid = xid;
 
 	/*
 	 * Process any tables that are being synchronized in parallel, as well as

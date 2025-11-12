@@ -2035,9 +2035,6 @@ pa_record_dependency_on_transactions(List *depends_on_xids)
 
 		txn_entry = dshash_find_or_insert(parallelized_txns, &xid, &found);
 
-		if (found)
-			elog(ERROR, "hash table corrupted");
-
 		winfo->shared->has_dependent_txn = true;
 
 		/*
@@ -2053,22 +2050,16 @@ pa_record_dependency_on_transactions(List *depends_on_xids)
 }
 
 /*
- * Mark the transaction state as finished and remove the shared hash entry if
- * there are dependent transactions waiting for this transaction to complete.
+ * Mark the transaction state as finished and remove the shared hash entry.
  */
 void
 pa_commit_transaction(void)
 {
 	TransactionId xid = MyParallelShared->xid;
-	bool		has_dependent_txn;
 
 	SpinLockAcquire(&MyParallelShared->mutex);
 	MyParallelShared->xact_state = PARALLEL_TRANS_FINISHED;
-	has_dependent_txn = MyParallelShared->has_dependent_txn;
 	SpinLockRelease(&MyParallelShared->mutex);
-
-	if (!has_dependent_txn)
-		return;
 
 	dshash_delete_key(parallelized_txns, &xid);
 	elog(DEBUG1, "depended xid %u committed", xid);
@@ -2123,3 +2114,24 @@ write_internal_relation(StringInfo s, LogicalRepRelation *rel)
 		logicalrep_write_all_rels(s);
 	}
  }
+
+/*
+ * Register a transaction to the shared hash table.
+ *
+ * This function is intended to be called during the commit phase of
+ * non-streamed transactions. Other parallel workers would wait,
+ * removing the added entry.
+ */
+void
+pa_add_parallellized_transaction(TransactionId xid)
+{
+	bool		found;
+	ParallelizedTxnEntry *txn_entry;
+
+	Assert(parallelized_txns);
+	Assert(TransactionIdIsValid(xid));
+
+	txn_entry = dshash_find_or_insert(parallelized_txns, &xid, &found);
+
+	dshash_release_lock(parallelized_txns, txn_entry);
+}

@@ -379,6 +379,8 @@ extern void pa_record_dependency_on_transactions(List *depends_on_xids);
 extern void pa_commit_transaction(void);
 extern void pa_wait_for_depended_transaction(TransactionId xid);
 
+extern void pa_add_parallellized_transaction(TransactionId xid);
+
 #define isParallelApplyWorker(worker) ((worker)->in_use && \
 									   (worker)->type == WORKERTYPE_PARALLEL_APPLY)
 #define isTableSyncWorker(worker) ((worker)->in_use && \
