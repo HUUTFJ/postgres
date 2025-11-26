@@ -1227,6 +1227,67 @@ pa_send_data(ParallelApplyWorkerInfo *winfo, Size nbytes, const void *data)
 }
 
 /*
+ * Distribute remote relation information to all active parallel apply workers
+ * that require it.
+ */
+void
+pa_distribute_schema_changes_to_workers(LogicalRepRelation *rel)
+{
+	List	   *workers_stopped = NIL;
+	StringInfoData out;
+
+	if (!ParallelApplyWorkerPool)
+		return;
+
+	initStringInfo(&out);
+
+	write_internal_relation(&out, rel);
+
+	foreach_ptr(ParallelApplyWorkerInfo, winfo, ParallelApplyWorkerPool)
+	{
+		/*
+		 * Skip the worker responsible for the current transaction, as the
+		 * relation information has already been sent to it.
+		 */
+		if (winfo == stream_apply_worker)
+			continue;
+
+		/*
+		 * Skip the worker that is in serialize mode, as they will soon stop
+		 * once they finish applying the transaction.
+		 */
+		if (winfo->serialize_changes)
+			continue;
+
+		elog(DEBUG1, "distributing schema changes to pa workers");
+
+		if (pa_send_data(winfo, out.len, out.data))
+			continue;
+
+		elog(DEBUG1, "failed to distribute, will stop that worker instead");
+
+		/*
+		 * Distribution to this worker failed due to a sending timeout. Wait
+		 * for the worker to complete its transaction and then stop it. This
+		 * is consistent with the handling of workers in serialize mode (see
+		 * pa_free_worker() for details).
+		 */
+		pa_wait_for_transaction(winfo->shared->xid);
+
+		pa_get_last_commit_end(winfo->shared->xid, false, NULL);
+
+		logicalrep_pa_worker_stop(winfo);
+
+		workers_stopped = lappend(workers_stopped, winfo);
+	}
+
+	pfree(out.data);
+
+	foreach_ptr(ParallelApplyWorkerInfo, winfo, workers_stopped)
+		pa_free_worker_info(winfo);
+}
+
+/*
  * Switch to PARTIAL_SERIALIZE mode for the current transaction -- this means
  * that the current data and any subsequent data for this transaction will be
  * serialized to a file. This is done to prevent possible deadlocks with
