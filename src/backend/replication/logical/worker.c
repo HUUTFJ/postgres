@@ -637,7 +637,7 @@ static void replorigin_reset(int code, Datum arg);
 static void
 apply_handle_internal_dependency(StringInfo s)
 {
-	int		nxids = pq_getmsgint(s, 4);
+	int			nxids = pq_getmsgint(s, 4);
 
 	for (int i = 0; i < nxids; i++)
 	{
@@ -655,7 +655,7 @@ apply_handle_internal_dependency(StringInfo s)
 static void
 apply_handle_internal_relation(StringInfo s)
 {
-	int		num_rels;
+	int			num_rels;
 
 	num_rels = pq_getmsgint(s, 4);
 
