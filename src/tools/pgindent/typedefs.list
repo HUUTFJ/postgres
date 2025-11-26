@@ -2088,6 +2088,7 @@ ParallelTransState
 ParallelVacuumState
 ParallelWorkerContext
 ParallelWorkerInfo
+ParallelizedTxnEntry
 Param
 ParamCompileHook
 ParamExecData

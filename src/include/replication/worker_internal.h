@@ -15,6 +15,7 @@
 #include "access/xlogdefs.h"
 #include "catalog/pg_subscription.h"
 #include "datatype/timestamp.h"
+#include "lib/dshash.h"
 #include "miscadmin.h"
 #include "replication/logicalrelation.h"
 #include "replication/walreceiver.h"
@@ -197,6 +198,9 @@ typedef struct ParallelApplyWorkerShared
 	 */
 	PartialFileSetState fileset_state;
 	FileSet		fileset;
+
+	dsa_handle	parallel_apply_dsa_handle;
+	dshash_table_handle parallelized_txns_handle;
 } ParallelApplyWorkerShared;
 
 /*

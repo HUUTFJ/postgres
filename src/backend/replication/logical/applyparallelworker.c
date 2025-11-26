@@ -218,11 +218,34 @@ typedef struct ParallelApplyWorkerEntry
 	ParallelApplyWorkerInfo *winfo;
 } ParallelApplyWorkerEntry;
 
+/* an entry in the parallelized_txns shared hash table */
+typedef struct ParallelizedTxnEntry
+{
+	TransactionId xid;			/* Hash key */
+} ParallelizedTxnEntry;
+
 /*
  * A hash table used to cache the state of streaming transactions being applied
  * by the parallel apply workers.
  */
 static HTAB *ParallelApplyTxnHash = NULL;
+
+/*
+ * A hash table used to track the parallelized transactions that could be
+ * depended on by other transactions.
+ */
+static dsa_area *parallel_apply_dsa_area = NULL;
+static dshash_table *parallelized_txns = NULL;
+
+/* parameters for the parallelized_txns shared hash table */
+static const dshash_parameters dsh_params = {
+	sizeof(TransactionId),
+	sizeof(ParallelizedTxnEntry),
+	dshash_memcmp,
+	dshash_memhash,
+	dshash_memcpy,
+	LWTRANCHE_PARALLEL_APPLY_DSA
+};
 
 /*
 * A list (pool) of active parallel apply workers. The information for
@@ -257,7 +280,8 @@ static List *subxactlist = NIL;
 static void pa_free_worker_info(ParallelApplyWorkerInfo *winfo);
 static ParallelTransState pa_get_xact_state(ParallelApplyWorkerShared *wshared);
 static PartialFileSetState pa_get_fileset_state(void);
-
+static void pa_attach_parallelized_txn_hash(dsa_handle *pa_dsa_handle,
+											dshash_table_handle *pa_dshash_handle);
 static void write_internal_relation(StringInfo s, LogicalRepRelation *rel);
 
 /*
@@ -866,6 +890,9 @@ pa_shutdown(int code, Datum arg)
 				   INVALID_PROC_NUMBER);
 
 	dsm_detach((dsm_segment *) DatumGetPointer(arg));
+
+	if (parallel_apply_dsa_area)
+		dsa_detach(parallel_apply_dsa_area);
 }
 
 /*
@@ -879,6 +906,8 @@ ParallelApplyWorkerMain(Datum main_arg)
 	dsm_segment *seg;
 	shm_toc    *toc;
 	shm_mq	   *mq;
+	dsa_handle	pa_dsa_handle;
+	dshash_table_handle pa_dshash_handle;
 	shm_mq_handle *mqh;
 	shm_mq_handle *error_mqh;
 	RepOriginId originid;
@@ -886,6 +915,8 @@ ParallelApplyWorkerMain(Datum main_arg)
 	char		originname[NAMEDATALEN];
 
 	InitializingApplyWorker = true;
+
+	pa_attach_parallelized_txn_hash(&pa_dsa_handle, &pa_dshash_handle);
 
 	/*
 	 * Setup signal handling.
@@ -1664,6 +1695,51 @@ pa_xact_finish(ParallelApplyWorkerInfo *winfo, XLogRecPtr remote_lsn)
 }
 
 /*
+ * Attach to the shared hash table for parallelized transactions.
+ */
+static void
+pa_attach_parallelized_txn_hash(dsa_handle *pa_dsa_handle,
+								dshash_table_handle *pa_dshash_handle)
+{
+	MemoryContext oldctx;
+
+	if (parallelized_txns)
+	{
+		Assert(parallel_apply_dsa_area);
+		*pa_dsa_handle = dsa_get_handle(parallel_apply_dsa_area);
+		*pa_dshash_handle = dshash_get_hash_table_handle(parallelized_txns);
+		return;
+	}
+
+	/* Be sure any local memory allocated by DSA routines is persistent. */
+	oldctx = MemoryContextSwitchTo(ApplyContext);
+
+	if (am_leader_apply_worker())
+	{
+		/* Initialize dynamic shared hash table for last-start times. */
+		parallel_apply_dsa_area = dsa_create(LWTRANCHE_PARALLEL_APPLY_DSA);
+		dsa_pin(parallel_apply_dsa_area);
+		dsa_pin_mapping(parallel_apply_dsa_area);
+		parallelized_txns = dshash_create(parallel_apply_dsa_area, &dsh_params, NULL);
+
+		/* Store handles in shared memory for other backends to use. */
+		*pa_dsa_handle = dsa_get_handle(parallel_apply_dsa_area);
+		*pa_dshash_handle = dshash_get_hash_table_handle(parallelized_txns);
+	}
+	else if (am_parallel_apply_worker())
+	{
+		/* Attach to existing dynamic shared hash table. */
+		parallel_apply_dsa_area = dsa_attach(MyParallelShared->parallel_apply_dsa_handle);
+		dsa_pin_mapping(parallel_apply_dsa_area);
+		parallelized_txns = dshash_attach(parallel_apply_dsa_area, &dsh_params,
+										  MyParallelShared->parallelized_txns_handle,
+										  NULL);
+	}
+
+	MemoryContextSwitchTo(oldctx);
+}
+
+/*
  * Wait for the given transaction to finish.
  */
 void
@@ -1671,7 +1747,23 @@ pa_wait_for_depended_transaction(TransactionId xid)
 {
 	elog(DEBUG1, "wait for depended xid %u", xid);
 
-	/* Search the dependent transactions and wait until they finish */
+	for (;;)
+	{
+		ParallelizedTxnEntry *txn_entry;
+
+		txn_entry = dshash_find(parallelized_txns, &xid, false);
+
+		/* The entry is removed only if the transaction is committed */
+		if (txn_entry == NULL)
+			break;
+
+		dshash_release_lock(parallelized_txns, txn_entry);
+
+		pa_lock_transaction(xid, AccessShareLock);
+		pa_unlock_transaction(xid, AccessShareLock);
+
+		CHECK_FOR_INTERRUPTS();
+	}
 
 	elog(DEBUG1, "finish waiting for depended xid %u", xid);
 }
