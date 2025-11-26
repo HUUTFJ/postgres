@@ -258,6 +258,8 @@ static void pa_free_worker_info(ParallelApplyWorkerInfo *winfo);
 static ParallelTransState pa_get_xact_state(ParallelApplyWorkerShared *wshared);
 static PartialFileSetState pa_get_fileset_state(void);
 
+static void write_internal_relation(StringInfo s, LogicalRepRelation *rel);
+
 /*
  * Returns true if it is OK to start a parallel apply worker, false otherwise.
  */
@@ -455,6 +457,21 @@ pa_launch_parallel_worker(void)
 	}
 
 	MemoryContextSwitchTo(oldcontext);
+
+	/*
+	 * Send all existing remote relation information to the parallel apply
+	 * worker. This allows the parallel worker to initialize the
+	 * LogicalRepRelMapEntry locally before applying remote changes.
+	 */
+	if (logicalrep_get_num_rels())
+	{
+		StringInfoData out;
+
+		initStringInfo(&out);
+
+		write_internal_relation(&out, NULL);
+		pa_send_data(winfo, out.len, out.data);
+	}
 
 	return winfo;
 }
@@ -1657,4 +1674,25 @@ pa_wait_for_depended_transaction(TransactionId xid)
 	/* Search the dependent transactions and wait until they finish */
 
 	elog(DEBUG1, "finish waiting for depended xid %u", xid);
+}
+
+/*
+ * Write internal relation description to the output stream.
+ */
+static void
+write_internal_relation(StringInfo s, LogicalRepRelation *rel)
+{
+	pq_sendbyte(s, PARALLEL_APPLY_INTERNAL_MESSAGE);
+	pq_sendbyte(s, LOGICAL_REP_MSG_INTERNAL_RELATION);
+
+	if (rel)
+	{
+		pq_sendint(s, 1, 4);
+		logicalrep_write_internal_rel(s, rel);
+	}
+	else
+	{
+		pq_sendint(s, logicalrep_get_num_rels(), 4);
+		logicalrep_write_all_rels(s);
+	}
 }
