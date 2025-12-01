@@ -2089,6 +2089,7 @@ ParallelHashGrowth
 ParallelHashJoinBatch
 ParallelHashJoinBatchAccessor
 ParallelHashJoinState
+ParallelizedTxnEntry
 ParallelIndexScanDesc
 ParallelSlot
 ParallelSlotArray
@@ -2573,6 +2574,8 @@ ReparameterizeForeignPathByChild_function
 ReplaceVarsFromTargetList_context
 ReplaceVarsNoMatchOption
 ReplaceWrapOption
+ReplicaIdentityEntry
+ReplicaIdentityKey
 ReplicaIdentityStmt
 ReplicationKind
 ReplicationSlot
@@ -4082,6 +4085,7 @@ rendezvousHashEntry
 rep
 replace_rte_variables_callback
 replace_rte_variables_context
+replica_identity_hash
 report_error_fn
 ret_type
 rewind_source
