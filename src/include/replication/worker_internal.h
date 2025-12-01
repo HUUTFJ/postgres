@@ -314,6 +314,10 @@ extern void apply_dispatch(StringInfo s);
 extern void maybe_reread_subscription(void);
 
 extern void stream_cleanup_files(Oid subid, TransactionId xid);
+extern void stream_open_file(Oid subid, TransactionId xid, bool first_segment);
+extern void stream_close_file(void);
+extern void stream_open_and_write_change(TransactionId xid, char action,
+										 StringInfo s);
 
 extern void set_stream_options(WalRcvStreamOptions *options,
 							   char *slotname,
@@ -327,7 +331,8 @@ extern void SetupApplyOrSyncWorker(int worker_slot);
 
 extern void DisableSubscriptionAndExit(void);
 
-extern void store_flush_position(XLogRecPtr remote_lsn, XLogRecPtr local_lsn);
+extern void store_flush_position(XLogRecPtr remote_lsn, XLogRecPtr local_lsn,
+								 TransactionId remote_xid);
 
 /* Function for apply error callback */
 extern void apply_error_callback(void *arg);
@@ -342,6 +347,7 @@ extern void pa_detach_all_error_mq(void);
 
 extern bool pa_send_data(ParallelApplyWorkerInfo *winfo, Size nbytes,
 						 const void *data);
+extern void pa_distribute_schema_changes_to_workers(LogicalRepRelation *rel);
 extern void pa_switch_to_partial_serialize(ParallelApplyWorkerInfo *winfo,
 										   bool stream_locked);
 
@@ -368,8 +374,9 @@ extern void pa_xact_finish(ParallelApplyWorkerInfo *winfo,
 						   XLogRecPtr remote_lsn);
 extern bool pa_transaction_committed(TransactionId xid);
 extern void pa_record_dependency_on_transactions(List *depends_on_xids);
-
+extern void pa_commit_transaction(void);
 extern void pa_wait_for_depended_transaction(TransactionId xid);
+extern void pa_add_parallelized_transaction(TransactionId xid);
 
 #define isParallelApplyWorker(worker) ((worker)->in_use && \
 									   (worker)->type == WORKERTYPE_PARALLEL_APPLY)
