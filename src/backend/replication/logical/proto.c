@@ -1253,6 +1253,10 @@ logicalrep_message_type(LogicalRepMsgType action)
 			return "STREAM ABORT";
 		case LOGICAL_REP_MSG_STREAM_PREPARE:
 			return "STREAM PREPARE";
+		case LOGICAL_REP_MSG_INTERNAL_DEPENDENCY:
+			return "INTERNAL DEPENDENCY";
+		case LOGICAL_REP_MSG_INTERNAL_RELATION:
+			return "INTERNAL RELATION";
 	}
 
 	/*

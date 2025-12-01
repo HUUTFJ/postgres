@@ -630,6 +630,47 @@ static TransApplyAction get_transaction_apply_action(TransactionId xid,
 static void replorigin_reset(int code, Datum arg);
 
 /*
+ * Handle internal dependency information.
+ *
+ * Wait for all transactions listed in the message to commit.
+ */
+static void
+apply_handle_internal_dependency(StringInfo s)
+{
+	int			nxids = pq_getmsgint(s, 4);
+
+	for (int i = 0; i < nxids; i++)
+	{
+		TransactionId xid = pq_getmsgint(s, 4);
+
+		pa_wait_for_depended_transaction(xid);
+	}
+}
+
+/*
+ * Handle internal relation information.
+ *
+ * Update all relation details in the relation map cache.
+ */
+static void
+apply_handle_internal_relation(StringInfo s)
+{
+	int			num_rels;
+
+	num_rels = pq_getmsgint(s, 4);
+
+	for (int i = 0; i < num_rels; i++)
+	{
+		LogicalRepRelation *rel = logicalrep_read_rel(s);
+
+		logicalrep_relmap_update(rel);
+
+		elog(DEBUG1, "parallel apply worker worker init relmap for %s",
+			 rel->relname);
+	}
+}
+
+/*
  * Form the origin name for the subscription.
  *
  * This is a common function for tablesync and other workers. Tablesync workers
@@ -3866,6 +3907,14 @@ apply_dispatch(StringInfo s)
 
 		case LOGICAL_REP_MSG_STREAM_PREPARE:
 			apply_handle_stream_prepare(s);
+			break;
+
+		case LOGICAL_REP_MSG_INTERNAL_RELATION:
+			apply_handle_internal_relation(s);
+			break;
+
+		case LOGICAL_REP_MSG_INTERNAL_DEPENDENCY:
+			apply_handle_internal_dependency(s);
 			break;
 
 		default:
