@@ -359,12 +359,16 @@ extern void pa_decr_and_wait_stream_block(void);
 extern void pa_xact_finish(ParallelApplyWorkerInfo *winfo,
 						   XLogRecPtr remote_lsn);
 
+extern void pa_wait_for_depended_transaction(TransactionId xid);
+
 #define isParallelApplyWorker(worker) ((worker)->in_use && \
 									   (worker)->type == WORKERTYPE_PARALLEL_APPLY)
 #define isTableSyncWorker(worker) ((worker)->in_use && \
 								   (worker)->type == WORKERTYPE_TABLESYNC)
 #define isSequenceSyncWorker(worker) ((worker)->in_use && \
 									  (worker)->type == WORKERTYPE_SEQUENCESYNC)
+
+#define PARALLEL_APPLY_INTERNAL_MESSAGE	'i'
 
 static inline bool
 am_tablesync_worker(void)
