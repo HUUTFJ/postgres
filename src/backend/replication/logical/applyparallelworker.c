@@ -216,6 +216,7 @@ typedef struct ParallelApplyWorkerEntry
 {
 	TransactionId xid;			/* Hash key -- must be first */
 	ParallelApplyWorkerInfo *winfo;
+	XLogRecPtr	local_end;
 } ParallelApplyWorkerEntry;
 
 /* an entry in the parallelized_txns shared hash table */
@@ -504,7 +505,7 @@ pa_launch_parallel_worker(void)
  * streaming changes.
  */
 void
-pa_allocate_worker(TransactionId xid)
+pa_allocate_worker(TransactionId xid, bool stream_txn)
 {
 	bool		found;
 	ParallelApplyWorkerInfo *winfo = NULL;
@@ -545,7 +546,9 @@ pa_allocate_worker(TransactionId xid)
 
 	winfo->in_use = true;
 	winfo->serialize_changes = false;
+	winfo->stream_txn = stream_txn;
 	entry->winfo = winfo;
+	entry->local_end = InvalidXLogRecPtr;
 }
 
 /*
@@ -740,6 +743,73 @@ pa_process_spooled_messages_if_required(void)
 	}
 
 	return true;
+}
+
+/*
+ * Get the local end LSN for a transaction applied by a parallel apply worker.
+ *
+ * Set delete_entry to true if you intend to remove the transaction from the
+ * ParallelApplyTxnHash after collecting its LSN.
+ *
+ * If the parallel apply worker did not write any changes during the transaction
+ * application due to situations like update/delete_missing or a before trigger,
+ * the *skipped_write will be set to true.
+ */
+XLogRecPtr
+pa_get_last_commit_end(TransactionId xid, bool delete_entry, bool *skipped_write)
+{
+	bool		found;
+	ParallelApplyWorkerEntry *entry;
+	ParallelApplyWorkerInfo *winfo;
+
+	Assert(TransactionIdIsValid(xid));
+
+	if (skipped_write)
+		*skipped_write = false;
+
+	/* Find an entry for the requested transaction. */
+	entry = hash_search(ParallelApplyTxnHash, &xid, HASH_FIND, &found);
+
+	if (!found)
+		return InvalidXLogRecPtr;
+
+	/*
+	 * If worker info is NULL, it indicates that the worker has been reused
+	 * for handling other transactions. Consequently, the local end LSN has
+	 * already been collected and saved in entry->local_end.
+	 */
+	winfo = entry->winfo;
+	if (winfo == NULL)
+	{
+		if (delete_entry &&
+			!hash_search(ParallelApplyTxnHash, &xid, HASH_REMOVE, NULL))
+			elog(ERROR, "hash table corrupted");
+
+		if (skipped_write)
+			*skipped_write = XLogRecPtrIsInvalid(entry->local_end);
+
+		return entry->local_end;
+	}
+
+	/* Return InvalidXLogRecPtr if the transaction is still in progress */
+	if (pa_get_xact_state(winfo->shared) != PARALLEL_TRANS_FINISHED)
+		return InvalidXLogRecPtr;
+
+	/* Collect the local end LSN from the worker's shared memory area */
+	entry->local_end = winfo->shared->last_commit_end;
+	entry->winfo = NULL;
+
+	if (skipped_write)
+		*skipped_write = XLogRecPtrIsInvalid(entry->local_end);
+
+	elog(DEBUG1, "store local commit %X/%X end to txn entry: %u",
+		 LSN_FORMAT_ARGS(entry->local_end), xid);
+
+	if (delete_entry &&
+		!hash_search(ParallelApplyTxnHash, &xid, HASH_REMOVE, NULL))
+		elog(ERROR, "hash table corrupted");
+
+	return entry->local_end;
 }
 
 /*
@@ -1686,6 +1756,26 @@ pa_xact_finish(ParallelApplyWorkerInfo *winfo, XLogRecPtr remote_lsn)
 	pa_free_worker(winfo);
 }
 
+bool
+pa_transaction_committed(TransactionId xid)
+{
+	bool		found;
+	ParallelApplyWorkerEntry *entry;
+
+	Assert(TransactionIdIsValid(xid));
+
+	/* Find an entry for the requested transaction */
+	entry = hash_search(ParallelApplyTxnHash, &xid, HASH_FIND, &found);
+
+	if (!found)
+		return true;
+
+	if (!entry->winfo)
+		return true;
+
+	return pa_get_xact_state(entry->winfo->shared) == PARALLEL_TRANS_FINISHED;
+}
+
 /*
  * Attach to the shared hash table for parallelized transactions.
  */
@@ -1729,6 +1819,37 @@ pa_attach_parallelized_txn_hash(dsa_handle *pa_dsa_handle,
 	}
 
 	MemoryContextSwitchTo(oldctx);
+}
+
+/*
+ * Record in-progress transactions from the given list that are being depended
+ * on into the shared hash table.
+ */
+void
+pa_record_dependency_on_transactions(List *depends_on_xids)
+{
+	foreach_xid(xid, depends_on_xids)
+	{
+		bool		found;
+		ParallelApplyWorkerEntry *winfo_entry;
+		ParallelApplyWorkerInfo *winfo;
+		ParallelizedTxnEntry *txn_entry;
+
+		winfo_entry = hash_search(ParallelApplyTxnHash, &xid, HASH_FIND, &found);
+		winfo = winfo_entry->winfo;
+
+		txn_entry = dshash_find_or_insert(parallelized_txns, &xid, &found);
+
+		/*
+		 * If the transaction has been committed now, remove the entry,
+		 * otherwise the parallel apply worker will remove the entry once
+		 * committed the transaction.
+		 */
+		if (pa_get_xact_state(winfo->shared) == PARALLEL_TRANS_FINISHED)
+			dshash_delete_entry(parallelized_txns, txn_entry);
+		else
+			dshash_release_lock(parallelized_txns, txn_entry);
+	}
 }
 
 /*
