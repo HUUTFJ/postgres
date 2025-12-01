@@ -235,6 +235,8 @@ typedef struct ParallelApplyWorkerInfo
 	 */
 	bool		in_use;
 
+	bool		stream_txn;
+
 	ParallelApplyWorkerShared *shared;
 } ParallelApplyWorkerInfo;
 
@@ -332,8 +334,10 @@ extern void apply_error_callback(void *arg);
 extern void set_apply_error_context_origin(char *originname);
 
 /* Parallel apply worker setup and interactions */
-extern void pa_allocate_worker(TransactionId xid);
+extern void pa_allocate_worker(TransactionId xid, bool stream_txn);
 extern ParallelApplyWorkerInfo *pa_find_worker(TransactionId xid);
+extern XLogRecPtr pa_get_last_commit_end(TransactionId xid, bool delete_entry,
+										 bool *skipped_write);
 extern void pa_detach_all_error_mq(void);
 
 extern bool pa_send_data(ParallelApplyWorkerInfo *winfo, Size nbytes,
@@ -362,6 +366,8 @@ extern void pa_decr_and_wait_stream_block(void);
 
 extern void pa_xact_finish(ParallelApplyWorkerInfo *winfo,
 						   XLogRecPtr remote_lsn);
+extern bool pa_transaction_committed(TransactionId xid);
+extern void pa_record_dependency_on_transactions(List *depends_on_xids);
 
 extern void pa_wait_for_depended_transaction(TransactionId xid);
 
