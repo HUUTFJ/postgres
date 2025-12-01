@@ -46,6 +46,7 @@ tests += {
       't/034_temporal.pl',
       't/035_conflicts.pl',
       't/036_sequences.pl',
+      't/050_parallel_apply.pl',
       't/100_bugs.pl',
     ],
   },
