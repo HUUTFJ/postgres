@@ -1645,3 +1645,19 @@ pa_xact_finish(ParallelApplyWorkerInfo *winfo, XLogRecPtr remote_lsn)
 
 	pa_free_worker(winfo);
 }
+
+/*
+ * Wait for the given transaction to finish.
+ */
+void
+pa_wait_for_depended_transaction(TransactionId xid)
+{
+	elog(DEBUG1, "wait for depended xid %u", xid);
+
+	for (;;)
+	{
+		/* XXX wait until given transaction is finished */
+	}
+
+	elog(DEBUG1, "finish waiting for depended xid %u", xid);
+}
