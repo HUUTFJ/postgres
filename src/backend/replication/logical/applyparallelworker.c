@@ -1079,6 +1079,29 @@ pa_shutdown(int code, Datum arg)
 }
 
 /*
+ * Common function to run the apply loop with error handling. Reset the
+ * replication origin before exit.
+ */
+static void
+start_parallel_apply(shm_mq_handle *mqh)
+{
+	PG_TRY();
+	{
+		LogicalParallelApplyLoop(mqh);
+	}
+	PG_CATCH();
+	{
+		/*
+		 * Reset the origin state to prevent the advancement of origin
+		 * progress if we fail to apply. See start_apply() for more detail.
+		 */
+		replorigin_reset(0, (Datum) 0);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+/*
  * Parallel apply worker entry point.
  */
 void
@@ -1206,7 +1229,7 @@ ParallelApplyWorkerMain(Datum main_arg)
 
 	set_apply_error_context_origin(originname);
 
-	LogicalParallelApplyLoop(mqh);
+	start_parallel_apply(mqh);
 
 	/*
 	 * The parallel apply worker must not get here because the parallel apply
