@@ -756,6 +756,14 @@ cleanup_replica_identity_table(List *committed_xid)
 	if (!committed_xid)
 		return;
 
+	/*
+	 * Skip if the replica_identity_table is not initialized yet. This can
+	 * happen if the empty transaction was replicated and a parallel apply
+	 * worker was launched. See comments in apply_handle_prepare().
+	 */
+	if (!replica_identity_table)
+		return;
+
 	replica_identity_start_iterate(replica_identity_table, &i);
 	while ((rientry = replica_identity_iterate(replica_identity_table, &i)) != NULL)
 	{
@@ -2116,6 +2124,11 @@ static void
 apply_handle_begin_prepare(StringInfo s)
 {
 	LogicalRepPreparedTxnData begin_data;
+	ParallelApplyWorkerInfo *winfo;
+	TransApplyAction apply_action;
+
+	/* Save the message before it is consumed. */
+	StringInfoData original_msg = *s;
 
 	/* Tablesync should never receive prepare. */
 	if (am_tablesync_worker())
@@ -2127,11 +2140,60 @@ apply_handle_begin_prepare(StringInfo s)
 	Assert(!TransactionIdIsValid(stream_xid));
 
 	logicalrep_read_begin_prepare(s, &begin_data);
-	set_apply_error_context_xact(begin_data.xid, begin_data.prepare_lsn);
+
+	remote_xid = begin_data.xid;
+
+	set_apply_error_context_xact(remote_xid, begin_data.prepare_lsn);
 
 	remote_final_lsn = begin_data.prepare_lsn;
 
 	maybe_start_skipping_changes(begin_data.prepare_lsn);
+
+	pa_allocate_worker(remote_xid, false);
+
+	apply_action = get_transaction_apply_action(remote_xid, &winfo);
+
+	elog(DEBUG1, "new remote_xid %u", remote_xid);
+	switch (apply_action)
+	{
+		case TRANS_LEADER_APPLY:
+			break;
+
+		case TRANS_LEADER_SEND_TO_PARALLEL:
+			Assert(winfo);
+
+			if (pa_send_data(winfo, s->len, s->data))
+			{
+				pa_set_stream_apply_worker(winfo);
+				break;
+			}
+
+			/*
+			 * Switch to serialize mode when we are not able to send the
+			 * change to parallel apply worker.
+			 */
+			pa_switch_to_partial_serialize(winfo, true);
+
+/* fall through */
+		case TRANS_LEADER_PARTIAL_SERIALIZE:
+			Assert(winfo);
+
+			stream_write_change(LOGICAL_REP_MSG_BEGIN_PREPARE, &original_msg);
+
+			/* Cache the parallel apply worker for this transaction. */
+			pa_set_stream_apply_worker(winfo);
+			break;
+
+		case TRANS_PARALLEL_APPLY:
+			/* Hold the lock until the end of the transaction. */
+			pa_lock_transaction(MyParallelShared->xid, AccessExclusiveLock);
+			pa_set_xact_state(MyParallelShared, PARALLEL_TRANS_STARTED);
+			break;
+
+		default:
+			elog(ERROR, "unexpected apply action: %d", (int) apply_action);
+			break;
+	}
 
 	in_remote_transaction = true;
 
@@ -2182,6 +2244,11 @@ static void
 apply_handle_prepare(StringInfo s)
 {
 	LogicalRepPreparedTxnData prepare_data;
+	ParallelApplyWorkerInfo *winfo;
+	TransApplyAction apply_action;
+
+	/* Save the message before it is consumed. */
+	StringInfoData original_msg = *s;
 
 	logicalrep_read_prepare(s, &prepare_data);
 
@@ -2192,36 +2259,136 @@ apply_handle_prepare(StringInfo s)
 								 LSN_FORMAT_ARGS(prepare_data.prepare_lsn),
 								 LSN_FORMAT_ARGS(remote_final_lsn))));
 
-	/*
-	 * Unlike commit, here, we always prepare the transaction even though no
-	 * change has happened in this transaction or all changes are skipped. It
-	 * is done this way because at commit prepared time, we won't know whether
-	 * we have skipped preparing a transaction because of those reasons.
-	 *
-	 * XXX, We can optimize such that at commit prepared time, we first check
-	 * whether we have prepared the transaction or not but that doesn't seem
-	 * worthwhile because such cases shouldn't be common.
-	 */
-	begin_replication_step();
+	apply_action = get_transaction_apply_action(remote_xid, &winfo);
 
-	apply_handle_prepare_internal(&prepare_data);
+	switch (apply_action)
+	{
+		case TRANS_LEADER_APPLY:
+			/*
+			 * Unlike commit, here, we always prepare the transaction even
+			 * though no change has happened in this transaction or all changes
+			 * are skipped. It is done this way because at commit prepared
+			 * time, we won't know whether we have skipped preparing a
+			 * transaction because of those reasons.
+			 *
+			 * XXX, We can optimize such that at commit prepared time, we first
+			 * check whether we have prepared the transaction or not but that
+			 * doesn't seem worthwhile because such cases shouldn't be common.
+			 */
+			begin_replication_step();
 
-	end_replication_step();
-	CommitTransactionCommand();
-	pgstat_report_stat(false);
+			/* Wait until the last transaction finishes */
+			if (TransactionIdIsValid(last_remote_xid))
+				pa_wait_for_depended_transaction(last_remote_xid);
 
-	/*
-	 * It is okay not to set the local_end LSN for the prepare because we
-	 * always flush the prepare record. So, we can send the acknowledgment of
-	 * the remote_end LSN as soon as prepare is finished.
-	 *
-	 * XXX For the sake of consistency with commit, we could have set it with
-	 * the LSN of prepare but as of now we don't track that value similar to
-	 * XactLastCommitEnd, and adding it for this purpose doesn't seems worth
-	 * it.
-	 */
-	store_flush_position(prepare_data.end_lsn, InvalidXLogRecPtr,
-						 InvalidTransactionId);
+			apply_handle_prepare_internal(&prepare_data);
+
+			end_replication_step();
+			CommitTransactionCommand();
+			pgstat_report_stat(false);
+
+			/*
+			 * It is okay not to set the local_end LSN for the prepare because
+			 * we always flush the prepare record. So, we can send the
+			 * acknowledgment of the remote_end LSN as soon as prepare is
+			 * finished.
+			 *
+			 * XXX For the sake of consistency with commit, we could have set
+			 * it with the LSN of prepare but as of now we don't track that
+			 * value similar to XactLastCommitEnd, and adding it for this
+			 * purpose doesn't seems worth
+			 * it.
+			 */
+			store_flush_position(prepare_data.end_lsn, InvalidXLogRecPtr,
+								 InvalidTransactionId);
+
+			break;
+
+		case TRANS_LEADER_SEND_TO_PARALLEL:
+			Assert(winfo);
+
+			/*
+			 * Mark this transaction as parallelized. This ensures that
+			 * upcoming transactions wait until this transaction is committed.
+			 */
+			pa_add_parallelized_transaction(remote_xid);
+
+			/*
+			 * Build a dependency between this transaction and the lastly
+			 * committed transaction to preserve the commit order. Then try to
+			 * send a COMMIT message if succeeded.
+			 */
+			if (build_dependency_with_last_committed_txn(winfo) &&
+				pa_send_data(winfo, s->len, s->data))
+			{
+				/* Finish processing the transaction. */
+				pa_xact_finish(winfo, prepare_data.end_lsn);
+				break;
+			}
+
+			/*
+			 * Switch to serialize mode when we are not able to send the
+			 * change to parallel apply worker.
+			 */
+			pa_switch_to_partial_serialize(winfo, true);
+/* fall through */
+		case TRANS_LEADER_PARTIAL_SERIALIZE:
+			Assert(winfo);
+
+			stream_open_and_write_change(remote_xid, LOGICAL_REP_MSG_PREPARE,
+										 &original_msg);
+
+			pa_set_fileset_state(winfo->shared, FS_SERIALIZE_DONE);
+
+			/* Finish processing the transaction. */
+			pa_xact_finish(winfo, prepare_data.end_lsn);
+			break;
+
+		case TRANS_PARALLEL_APPLY:
+
+			/*
+			 * If the parallel apply worker is applying spooled messages then
+			 * close the file before committing.
+			 */
+			if (stream_fd)
+				stream_close_file();
+
+			begin_replication_step();
+
+			INJECTION_POINT("parallel-worker-before-prepare", NULL);
+
+			/* Mark the transaction as prepared. */
+			apply_handle_prepare_internal(&prepare_data);
+
+			end_replication_step();
+
+			CommitTransactionCommand();
+			pgstat_report_stat(false);
+
+			store_flush_position(prepare_data.end_lsn, InvalidXLogRecPtr,
+								 InvalidTransactionId);
+
+			/*
+			 * It is okay not to set the local_end LSN for the prepare because
+			 * we always flush the prepare record. See apply_handle_prepare.
+			 */
+			MyParallelShared->last_commit_end = InvalidXLogRecPtr;
+			pa_commit_transaction();
+
+			pa_unlock_transaction(MyParallelShared->xid, AccessExclusiveLock);
+
+			pa_reset_subtrans();
+			break;
+
+		default:
+			elog(ERROR, "unexpected apply action: %d", (int) apply_action);
+			break;
+	}
+
+	/* Cache the remote_xid */
+	last_remote_xid = remote_xid;
+
+	remote_xid = InvalidTransactionId;
 
 	in_remote_transaction = false;
 
@@ -2269,6 +2436,9 @@ apply_handle_commit_prepared(StringInfo s)
 	/* There is no transaction when COMMIT PREPARED is called */
 	begin_replication_step();
 
+	if (TransactionIdIsValid(last_remote_xid))
+		pa_wait_for_depended_transaction(last_remote_xid);
+
 	/*
 	 * Update origin state so we can restart streaming from correct position
 	 * in case of crash.
@@ -2280,6 +2450,14 @@ apply_handle_commit_prepared(StringInfo s)
 	end_replication_step();
 	CommitTransactionCommand();
 	pgstat_report_stat(false);
+
+	/*
+	 * No need to update last_remote_xid because leader worker applied the
+	 * message thus upcoming transaction preserves the order automatically.
+	 * Let's set the xid to an invalid value to skip sending the
+	 * INTERNAL_DEPENDENCY message.
+	 */
+	last_remote_xid = InvalidTransactionId;
 
 	store_flush_position(prepare_data.end_lsn, XactLastCommitEnd,
 						 InvalidTransactionId);
@@ -2337,6 +2515,10 @@ apply_handle_rollback_prepared(StringInfo s)
 
 		/* There is no transaction when ABORT/ROLLBACK PREPARED is called */
 		begin_replication_step();
+
+		if (TransactionIdIsValid(last_remote_xid))
+			pa_wait_for_depended_transaction(last_remote_xid);
+
 		FinishPreparedTransaction(gid, false);
 		end_replication_step();
 		CommitTransactionCommand();
