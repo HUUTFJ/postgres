@@ -286,6 +286,8 @@ extern int	logicalrep_sync_worker_count(Oid subid);
 extern void ReplicationOriginNameForLogicalRep(Oid suboid, Oid relid,
 											   char *originname, Size szoriginname);
 
+void replorigin_reset(int code, Datum arg);
+
 extern bool AllTablesyncsReady(void);
 extern bool HasSubscriptionTablesCached(void);
 extern void UpdateTwoPhaseState(Oid suboid, char new_state);
@@ -374,6 +376,7 @@ extern void pa_xact_finish(ParallelApplyWorkerInfo *winfo,
 						   XLogRecPtr remote_lsn);
 extern bool pa_transaction_committed(TransactionId xid);
 extern void pa_record_dependency_on_transactions(List *depends_on_xids);
+extern void leader_finish_transaction(TransactionId xid);
 extern void pa_commit_transaction(void);
 extern void pa_wait_for_depended_transaction(TransactionId xid);
 extern void pa_add_parallelized_transaction(TransactionId xid);

@@ -1079,6 +1079,29 @@ pa_shutdown(int code, Datum arg)
 }
 
 /*
+ * Common function to run the apply loop with error handling. Reset the
+ * replication origin before exit.
+ */
+static void
+start_parallel_apply(shm_mq_handle *mqh)
+{
+	PG_TRY();
+	{
+		LogicalParallelApplyLoop(mqh);
+	}
+	PG_CATCH();
+	{
+		/*
+		 * Reset the origin state to prevent the advancement of origin
+		 * progress if we fail to apply. See start_apply() for more detail.
+		 */
+		replorigin_reset(0, (Datum) 0);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+/*
  * Parallel apply worker entry point.
  */
 void
@@ -1206,7 +1229,7 @@ ParallelApplyWorkerMain(Datum main_arg)
 
 	set_apply_error_context_origin(originname);
 
-	LogicalParallelApplyLoop(mqh);
+	start_parallel_apply(mqh);
 
 	/*
 	 * The parallel apply worker must not get here because the parallel apply
@@ -2066,6 +2089,26 @@ pa_commit_transaction(void)
 
 	dshash_delete_key(parallelized_txns, &xid);
 	elog(DEBUG1, "depended xid %u committed", xid);
+}
+
+/*
+ * Similar with pa_commit_transaction(), but called by leader apply worker.
+ */
+void
+leader_finish_transaction(TransactionId xid)
+{
+	Assert(am_leader_apply_worker());
+
+	/*
+	 * Quick exit if parallelized_txns has not been initialized yet. This can
+	 * happen when either COMMIT_PREPARED or ROLLBACK_PREPARED comes just after
+	 * the server restarts.
+	 */
+	if (!parallelized_txns)
+		return;
+
+	dshash_delete_key(parallelized_txns, &xid);
+	elog(DEBUG1, "depended xid %u finished", xid);
 }
 
 /*
