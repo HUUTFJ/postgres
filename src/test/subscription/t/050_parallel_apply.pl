@@ -17,6 +17,8 @@ if ($ENV{enable_injection_points} ne 'yes')
 # Initialize publisher node
 my $node_publisher = PostgreSQL::Test::Cluster->new('publisher');
 $node_publisher->init(allows_streaming => 'logical');
+$node_publisher->append_conf('postgresql.conf',
+    "max_prepared_transactions = 10");
 $node_publisher->start;
 
 # Insert initial data
@@ -35,6 +37,8 @@ $node_subscriber->init;
 $node_subscriber->append_conf('postgresql.conf', "log_min_messages = debug1");
 $node_subscriber->append_conf('postgresql.conf',
 	"max_logical_replication_workers = 10");
+$node_subscriber->append_conf('postgresql.conf',
+    "max_prepared_transactions = 10");
 $node_subscriber->start;
 
 # Check if the extension injection_points is available, as it may be
@@ -126,5 +130,61 @@ $result =
   $node_subscriber->safe_psql('postgres',
     "SELECT count(1) FROM regress_tab WHERE value = 'updated'");
 is ($result, 5, 'updates are also replicated to subscriber');
+
+# Ensure PREPAREd transaction also affects the parallel apply
+
+$node_subscriber->safe_psql('postgres',
+    "ALTER SUBSCRIPTION regress_sub DISABLE;");
+$node_subscriber->poll_query_until('postgres',
+	"SELECT count(*) = 0 FROM pg_stat_activity WHERE backend_type = 'logical replication apply worker'"
+);
+$node_subscriber->safe_psql(
+	'postgres', "
+    ALTER SUBSCRIPTION regress_sub SET (two_phase = on);
+    ALTER SUBSCRIPTION regress_sub ENABLE;");
+
+$result = $node_subscriber->safe_psql('postgres',
+    "SELECT count(1) FROM pg_stat_activity WHERE backend_type = 'logical replication parallel worker'");
+is($result, '0', "no parallel apply workers exist after restart");
+
+# Attach an injection_point. Parallel workers would wait before the prepare
+$node_subscriber->safe_psql('postgres',
+	"SELECT injection_points_attach('parallel-worker-before-prepare','wait');"
+);
+
+# PREPARE a transaction on publisher. It would be handled by a parallel apply
+# worker.
+$node_publisher->safe_psql('postgres', qq[
+    BEGIN;
+    INSERT INTO regress_tab VALUES (generate_series(51, 60), 'prepare');
+    PREPARE TRANSACTION 'regress_prepare';
+]);
+
+# Wait until the parallel worker enters the injection point.
+$node_subscriber->wait_for_event('logical replication parallel worker',
+	'parallel-worker-before-prepare');
+
+$offset = -s $node_subscriber->logfile;
+
+# Insert tuples on publisher again. This transaction waits for the prepared
+# transaction
+$node_publisher->safe_psql('postgres',
+    "INSERT INTO regress_tab VALUES (generate_series(61, 70), 'test');");
+
+# Verify the parallel worker waits for the transaction
+$str = $node_subscriber->wait_for_log(qr/wait for depended xid ([1-9][0-9]+)/, $offset);
+$xid = $str =~ /wait for depended xid ([1-9][0-9]+)/;
+
+# Wakeup the parallel worker
+$node_subscriber->safe_psql('postgres', qq[
+    SELECT injection_points_detach('parallel-worker-before-prepare');
+    SELECT injection_points_wakeup('parallel-worker-before-prepare');
+]);
+
+$node_subscriber->wait_for_log(qr/finish waiting for depended xid $xid/, $offset);
+
+# COMMIT the prepared transaction. It is always handled by the leader
+$node_publisher->safe_psql('postgres', "COMMIT PREPARED 'regress_prepare';");
+$node_publisher->wait_for_catchup('regress_sub');
 
 done_testing();
