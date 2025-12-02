@@ -286,6 +286,8 @@ extern int	logicalrep_sync_worker_count(Oid subid);
 extern void ReplicationOriginNameForLogicalRep(Oid suboid, Oid relid,
 											   char *originname, Size szoriginname);
 
+void replorigin_reset(int code, Datum arg);
+
 extern bool AllTablesyncsReady(void);
 extern bool HasSubscriptionTablesCached(void);
 extern void UpdateTwoPhaseState(Oid suboid, char new_state);
