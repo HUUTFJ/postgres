@@ -184,4 +184,51 @@ $node_subscriber->wait_for_log(qr/finish waiting for depended xid $xid/, $offset
 $node_publisher->safe_psql('postgres', "COMMIT PREPARED 'regress_prepare';");
 $node_publisher->wait_for_catchup('regress_sub');
 
+# Ensure streamed transactions waits the previous transaction
+
+$node_publisher->append_conf('postgresql.conf',
+   "logical_decoding_work_mem = 64kB");
+$node_publisher->reload;
+# Run a query to make sure that the reload has taken effect.
+$node_publisher->safe_psql('postgres', "SELECT 1");
+
+# Attach the injection_point again
+$node_subscriber->safe_psql('postgres',
+	"SELECT injection_points_attach('parallel-worker-before-commit','wait');"
+);
+
+$node_publisher->safe_psql('postgres',
+    "INSERT INTO regress_tab VALUES (generate_series(71, 80), 'test');");
+
+# Wait until the parallel worker enters the injection point.
+$node_subscriber->wait_for_event('logical replication parallel worker',
+	'parallel-worker-before-commit');
+
+# Run a transaction which would be streamed
+my $h = $node_publisher->background_psql('postgres', on_error_stop => 0);
+
+$offset = -s $node_subscriber->logfile;
+
+$h->query_safe(
+	q{
+BEGIN;
+UPDATE regress_tab SET value = 'streamed-updated' WHERE id BETWEEN 71 AND 80;
+INSERT INTO regress_tab VALUES (generate_series(100, 5100), 'streamed');
+});
+
+# Verify the parallel worker waits for the transaction
+$str = $node_subscriber->wait_for_log(qr/wait for depended xid ([1-9][0-9]+)/, $offset);
+$xid = $str =~ /wait for depended xid ([1-9][0-9]+)/;
+
+# Wakeup the parallel worker
+$node_subscriber->safe_psql('postgres', qq[
+    SELECT injection_points_detach('parallel-worker-before-commit');
+    SELECT injection_points_wakeup('parallel-worker-before-commit');
+]);
+
+# Verify the streamed transaction can be applied
+$node_subscriber->wait_for_log(qr/finish waiting for depended xid $xid/, $offset);
+
+$h->query_safe("COMMIT;");
+
 done_testing();
