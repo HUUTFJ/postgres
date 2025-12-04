@@ -168,7 +168,14 @@
  * key) as another ongoing transaction (see handle_dependency_on_change for
  * details). If so, the leader sends a list of dependent transaction IDs to the
  * parallel worker, indicating that the parallel apply worker must wait for
- * these transactions to commit before proceeding.
+ * these transactions to commit before proceeding. If transactions are streamed
+ * but leader deciedes no to assign parallel apply workers, dependencies are
+ * verified when the transaction is committed.
+ *
+ * Non-streaming transactions
+ * ======================
+ * The handling is similar to streaming transactions, but including few
+ * differences:
  *
  * Commit order
  * ------------
@@ -1780,6 +1787,12 @@ pa_stream_abort(LogicalRepStreamAbortData *abort_data)
 
 		pa_reset_subtrans();
 
+		/*
+		 * Remove the transaction from parallelized_txns to avoid upcoming
+		 * transaction waits for.
+		 */
+		dshash_delete_key(parallelized_txns, &xid);
+
 		pgstat_report_activity(STATE_IDLE, NULL);
 	}
 	else
@@ -1811,6 +1824,11 @@ pa_stream_abort(LogicalRepStreamAbortData *abort_data)
 				break;
 			}
 		}
+
+		/*
+		 * XXX: sub-transactions have not beed registered in parallelized_txns.
+		 */
+		Assert(!dshash_find(parallelized_txns, &subxid, false));
 	}
 }
 
