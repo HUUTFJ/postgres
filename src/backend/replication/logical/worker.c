@@ -970,12 +970,25 @@ check_dependency_on_replica_identity(Oid relid,
 													   new_depended_xid);
 
 	/*
+	 * Remove the entry if it is registered for the streamed transactions. We
+	 * do not have to register an entry for them; The leader worker always
+	 * waits until the parallel worker finishes handling streamed transactions,
+	 * thus no need to consider the possiblity that upcoming parallel workers
+	 * would go ahead.
+	 */
+	if (TransactionIdIsValid(stream_xid) && !found)
+	{
+		free_replica_identity_key(rientry->keydata);
+		replica_identity_delete_item(replica_identity_table, rientry);
+	}
+
+	/*
 	 * Update the new depended xid into the entry if valid, the new xid could
 	 * be invalid if the transaction will be applied by the leader itself
 	 * which means all the changes will be committed before processing next
 	 * transaction, so no need to be depended on.
 	 */
-	if (TransactionIdIsValid(new_depended_xid))
+	else if (TransactionIdIsValid(new_depended_xid))
 		rientry->remote_xid = new_depended_xid;
 
 	/*
@@ -1089,8 +1102,11 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 	 */
 	StringInfoData change = *s;
 
-	/* Compute dependency only for non-streaming transaction */
-	if (in_streamed_transaction || (winfo && winfo->stream_txn))
+	/*
+	 * Skip if we are handling streaming transactions but changes are not
+	 * applied yet.
+	 */
+	if (pa_stream_apply_worker_is_null() && in_streamed_transaction)
 		return;
 
 	/* Only the leader checks dependencies and schedules the parallel apply */
@@ -1450,7 +1466,18 @@ handle_streamed_transaction(LogicalRepMsgType action, StringInfo s)
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("invalid transaction ID in streamed replication transaction")));
 
-	handle_dependency_on_change(action, s, current_xid, winfo);
+	/*
+	 * Check dependencies related to the received change. The XID of the top
+	 * transaction is always used to avoid detecting false-positive
+	 * dependencies between top and sub transactions. Sub-transactions can be
+	 * replicated for streamed transactions, and they won't be marked as
+	 * parallelized so that parallel workers won't wait for rolled-back
+	 * sub-transactions.
+	 */
+	handle_dependency_on_change(action, s,
+								in_streamed_transaction
+								? stream_xid : remote_xid,
+								winfo);
 
 	/*
 	 * Re-fetch the latest apply action as it might have been changed during
@@ -2587,6 +2614,10 @@ apply_handle_stream_prepare(StringInfo s)
 			apply_spooled_messages(MyLogicalRepWorker->stream_fileset,
 								   prepare_data.xid, prepare_data.prepare_lsn);
 
+			/* Wait until the last transaction finishes */
+			if (TransactionIdIsValid(last_remote_xid))
+				pa_wait_for_depended_transaction(last_remote_xid);
+
 			/* Mark the transaction as prepared. */
 			apply_handle_prepare_internal(&prepare_data);
 
@@ -2610,7 +2641,8 @@ apply_handle_stream_prepare(StringInfo s)
 		case TRANS_LEADER_SEND_TO_PARALLEL:
 			Assert(winfo);
 
-			if (pa_send_data(winfo, s->len, s->data))
+			if (build_dependency_with_last_committed_txn(winfo) &&
+				pa_send_data(winfo, s->len, s->data))
 			{
 				/* Finish processing the streaming transaction. */
 				pa_xact_finish(winfo, prepare_data.end_lsn);
@@ -2675,6 +2707,11 @@ apply_handle_stream_prepare(StringInfo s)
 	}
 
 	pgstat_report_stat(false);
+
+	/*
+	 * No need to update the last_remote_xid here because leader worker
+	 * always wait until streamed transactions finish.
+	 */
 
 	/*
 	 * Process any tables that are being synchronized in parallel, as well as
@@ -3460,6 +3497,10 @@ apply_handle_stream_commit(StringInfo s)
 			apply_spooled_messages(MyLogicalRepWorker->stream_fileset, xid,
 								   commit_data.commit_lsn);
 
+			/* Wait until the last transaction finishes */
+			if (TransactionIdIsValid(last_remote_xid))
+				pa_wait_for_depended_transaction(last_remote_xid);
+
 			apply_handle_commit_internal(&commit_data);
 
 			/* Unlink the files with serialized changes and subxact info. */
@@ -3471,7 +3512,20 @@ apply_handle_stream_commit(StringInfo s)
 		case TRANS_LEADER_SEND_TO_PARALLEL:
 			Assert(winfo);
 
-			if (pa_send_data(winfo, s->len, s->data))
+			/*
+			 * Apart from non-streaming case, no need to mark this transaction
+			 * as parallelized. Because the leader waits until the streamed
+			 * transaction is committed thus commit ordering is always
+			 * preserved.
+			 */
+
+			/*
+			 * Build a dependency between this transaction and the lastly
+			 * committed transaction to preserve the commit order. Then try to
+			 * send a COMMIT message if succeeded.
+			 */
+			if (build_dependency_with_last_committed_txn(winfo) &&
+				pa_send_data(winfo, s->len, s->data))
 			{
 				/* Finish processing the streaming transaction. */
 				pa_xact_finish(winfo, commit_data.end_lsn);
