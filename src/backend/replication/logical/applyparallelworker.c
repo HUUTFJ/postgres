@@ -1780,6 +1780,12 @@ pa_stream_abort(LogicalRepStreamAbortData *abort_data)
 
 		pa_reset_subtrans();
 
+		/*
+		 * Remove the transaction from parallelized_txns to avoid upcoming
+		 * transaction waits for.
+		 */
+		dshash_delete_key(parallelized_txns, &xid);
+
 		pgstat_report_activity(STATE_IDLE, NULL);
 	}
 	else
@@ -1811,6 +1817,12 @@ pa_stream_abort(LogicalRepStreamAbortData *abort_data)
 				break;
 			}
 		}
+
+		/*
+		 * Remove the sub-transaction from parallelized_txns to avoid upcoming
+		 * transaction waits for.
+		 */
+		dshash_delete_key(parallelized_txns, &subxid);
 	}
 }
 
@@ -2089,6 +2101,26 @@ pa_commit_transaction(void)
 
 	dshash_delete_key(parallelized_txns, &xid);
 	elog(DEBUG1, "depended xid %u committed", xid);
+}
+
+/*
+ * Similar with pa_commit_transaction(), but called by leader apply worker.
+ */
+void
+leader_finish_transaction(TransactionId xid)
+{
+	Assert(am_leader_apply_worker());
+
+	/*
+	 * Quick exit if parallelized_txns has not been initialized yet. This can
+	 * happen when either COMMIT_PREPARED or ROLLBACK_PREPARED comes just after
+	 * the server restarts.
+	 */
+	if (!parallelized_txns)
+		return;
+
+	dshash_delete_key(parallelized_txns, &xid);
+	elog(DEBUG1, "depended xid %u finished", xid);
 }
 
 /*

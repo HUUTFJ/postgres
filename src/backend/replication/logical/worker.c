@@ -490,6 +490,9 @@ static TransactionId last_remote_xid = InvalidTransactionId;
 /* fields valid only when processing streamed transaction */
 static bool in_streamed_transaction = false;
 
+/* true while the streamed transaction is being bypassed/serialized */
+static bool is_streamed_transaction_processing = false;
+
 static TransactionId stream_xid = InvalidTransactionId;
 
 /*
@@ -1078,8 +1081,11 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 	 */
 	StringInfoData change = *s;
 
-	/* Compute dependency only for non-streaming transaction */
-	if (in_streamed_transaction || (winfo && winfo->stream_txn))
+	/*
+	 * Skip if we are handling streaming transactions but changes are not
+	 * applied yet.
+	 */
+	if (is_streamed_transaction_processing)
 		return;
 
 	/* Only the leader checks dependencies and schedules the parallel apply */
@@ -1208,7 +1214,10 @@ write_internal_dependencies(StringInfo s, List *depends_on_xids)
 	pq_sendint32(s, list_length(depends_on_xids));
 
 	foreach_xid(xid, depends_on_xids)
+	{
+		elog(LOG, "XXX sending a dependency to %u", xid);
 		pq_sendint32(s, xid);
+	}
 }
 
 /*
@@ -2556,6 +2565,9 @@ apply_handle_stream_prepare(StringInfo s)
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("tablesync worker received a STREAM PREPARE message")));
 
+	/* Unset a flag to allow tracking the dependency between transactions */
+	is_streamed_transaction_processing = false;
+
 	logicalrep_read_stream_prepare(s, &prepare_data);
 	set_apply_error_context_xact(prepare_data.xid, prepare_data.prepare_lsn);
 
@@ -2571,6 +2583,10 @@ apply_handle_stream_prepare(StringInfo s)
 			 */
 			apply_spooled_messages(MyLogicalRepWorker->stream_fileset,
 								   prepare_data.xid, prepare_data.prepare_lsn);
+
+			/* Wait until the last transaction finishes */
+			if (TransactionIdIsValid(last_remote_xid))
+				pa_wait_for_depended_transaction(last_remote_xid);
 
 			/* Mark the transaction as prepared. */
 			apply_handle_prepare_internal(&prepare_data);
@@ -2646,6 +2662,7 @@ apply_handle_stream_prepare(StringInfo s)
 			 */
 			MyParallelShared->last_commit_end = InvalidXLogRecPtr;
 
+			pa_commit_transaction();
 			pa_set_xact_state(MyParallelShared, PARALLEL_TRANS_FINISHED);
 			pa_unlock_transaction(MyParallelShared->xid, AccessExclusiveLock);
 
@@ -2660,6 +2677,11 @@ apply_handle_stream_prepare(StringInfo s)
 	}
 
 	pgstat_report_stat(false);
+
+	/*
+	 * XXX no need to update the last_remote_xid here because leader worker
+	 * always wait until streamed transactions finish.
+	 */
 
 	/*
 	 * Process any tables that are being synchronized in parallel, as well as
@@ -2784,6 +2806,7 @@ apply_handle_stream_start(StringInfo s)
 	{
 		case TRANS_LEADER_SERIALIZE:
 
+			is_streamed_transaction_processing = true;
 			/*
 			 * Function stream_start_internal starts a transaction. This
 			 * transaction will be committed on the stream stop unless it is a
@@ -2833,6 +2856,7 @@ apply_handle_stream_start(StringInfo s)
 			/* fall through */
 		case TRANS_LEADER_PARTIAL_SERIALIZE:
 			Assert(winfo);
+			is_streamed_transaction_processing = true;
 
 			/*
 			 * TODO, the pa worker could start to wait too soon when
@@ -2992,6 +3016,7 @@ apply_handle_stream_stop(StringInfo s)
 			break;
 	}
 
+	is_streamed_transaction_processing = false;
 	in_streamed_transaction = false;
 	stream_xid = InvalidTransactionId;
 
@@ -3112,6 +3137,8 @@ apply_handle_stream_abort(StringInfo s)
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("STREAM ABORT message without STREAM STOP")));
 
+	is_streamed_transaction_processing = false;
+
 	/* We receive abort information only when we can apply in parallel. */
 	logicalrep_read_stream_abort(s, &abort_data,
 								 MyLogicalRepWorker->parallel_apply);
@@ -3133,6 +3160,9 @@ apply_handle_stream_abort(StringInfo s)
 			 * serialized to file.
 			 */
 			stream_abort_internal(xid, subxid);
+
+			/* Remove the transaction from parallelized_txns */
+			leader_finish_transaction(xid);
 
 			elog(DEBUG1, "finished processing the STREAM ABORT command");
 			break;
@@ -3244,6 +3274,11 @@ apply_handle_stream_abort(StringInfo s)
 			elog(ERROR, "unexpected apply action: %d", (int) apply_action);
 			break;
 	}
+
+	/*
+	 * XXX should we update the last_remote_xid even here? The leader does not
+	 * wait if a sub-transaction is aborted.
+	 */
 
 	reset_apply_error_context_info();
 }
@@ -3429,6 +3464,9 @@ apply_handle_stream_commit(StringInfo s)
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("STREAM COMMIT message without STREAM STOP")));
 
+	/* Unset a flag to allow tracking the dependency between transactions */
+	is_streamed_transaction_processing = false;
+
 	xid = logicalrep_read_stream_commit(s, &commit_data);
 	set_apply_error_context_xact(xid, commit_data.commit_lsn);
 
@@ -3445,10 +3483,17 @@ apply_handle_stream_commit(StringInfo s)
 			apply_spooled_messages(MyLogicalRepWorker->stream_fileset, xid,
 								   commit_data.commit_lsn);
 
+			/* Wait until the last transaction finishes */
+			if (TransactionIdIsValid(last_remote_xid))
+				pa_wait_for_depended_transaction(last_remote_xid);
+
 			apply_handle_commit_internal(&commit_data);
 
 			/* Unlink the files with serialized changes and subxact info. */
 			stream_cleanup_files(MyLogicalRepWorker->subid, xid);
+
+			/* Remove the transaction from parallelized_txns */
+			leader_finish_transaction(xid);
 
 			elog(DEBUG1, "finished processing the STREAM COMMIT command");
 			break;
@@ -3508,6 +3553,8 @@ apply_handle_stream_commit(StringInfo s)
 
 			MyParallelShared->last_commit_end = XactLastCommitEnd;
 
+			pa_commit_transaction();
+
 			/*
 			 * It is important to set the transaction state as finished before
 			 * releasing the lock. See pa_wait_for_xact_finish.
@@ -3525,8 +3572,10 @@ apply_handle_stream_commit(StringInfo s)
 			break;
 	}
 
-	/* Cache the remote xid */
-	last_remote_xid = xid;
+	/*
+	 * XXX no need to update the last_remote_xid here because leader worker
+	 * always wait until streamed transactions finish.
+	 */
 
 	/*
 	 * Process any tables that are being synchronized in parallel, as well as
