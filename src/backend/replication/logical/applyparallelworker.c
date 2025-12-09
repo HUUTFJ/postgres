@@ -1826,9 +1826,10 @@ pa_stream_abort(LogicalRepStreamAbortData *abort_data)
 		}
 
 		/*
-		 * XXX: sub-transactions have not beed registered in parallelized_txns.
+		 * Remove the sub-transaction from parallelized_txns to avoid upcoming
+		 * transaction waits for.
 		 */
-		Assert(!dshash_find(parallelized_txns, &subxid, false));
+		dshash_delete_key(parallelized_txns, &subxid);
 	}
 }
 

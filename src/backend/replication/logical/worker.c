@@ -827,6 +827,10 @@ check_and_append_xid_dependency(List *depends_on_xids,
 	if (list_member_xid(depends_on_xids, *depends_on_xid))
 		return depends_on_xids;
 
+	/* Skip appending if the depends-on transaction is a top-level xid */
+	if (TransactionIdEquals(stream_xid, *depends_on_xid))
+		return depends_on_xids;
+
 	/*
 	 * Return and reset the xid if the transaction has been committed.
 	 */
@@ -1445,15 +1449,7 @@ handle_streamed_transaction(LogicalRepMsgType action, StringInfo s)
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("invalid transaction ID in streamed replication transaction")));
 
-	/*
-	 * XXX: The XID of the top transaction is always used for dependency
-	 * tracking. Otherwise, we may wrongly consider that a sub-transaction
-	 * must wait until other sub-transactions or its top-transaction finish,
-	 * i.e., the transaction would stay forever. This can happen if several
-	 * sub-transactions handle the same table.
-	 */
-	handle_dependency_on_change(action, s, in_streamed_transaction
-								? stream_xid : remote_xid, winfo);
+	handle_dependency_on_change(action, s, current_xid, winfo);
 
 	/*
 	 * Re-fetch the latest apply action as it might have been changed during
