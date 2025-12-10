@@ -827,9 +827,22 @@ check_and_append_xid_dependency(List *depends_on_xids,
 	if (list_member_xid(depends_on_xids, *depends_on_xid))
 		return depends_on_xids;
 
-	/* Skip appending if the depends-on transaction is a top-level xid */
+	/*
+	 * Skip appending if the depends-on transaction is a top-level transaction
+	 * of this.
+	 */
 	if (TransactionIdEquals(stream_xid, *depends_on_xid))
 		return depends_on_xids;
+
+	/*
+	 * Skip appending if the depends-on transaction is a sub-transction under
+	 * the same top-transaction.
+	 */
+	for (int i = subxact_data.nsubxacts; i > 0; i--)
+	{
+		if (subxact_data.subxacts[i - 1].xid == *depends_on_xid)
+			return depends_on_xids;
+	}
 
 	/*
 	 * Return and reset the xid if the transaction has been committed.
