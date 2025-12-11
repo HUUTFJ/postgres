@@ -126,6 +126,21 @@ logicalrep_relmap_init(void)
 }
 
 /*
+ * Release local index list
+ */
+static void
+free_local_unique_indexes(LogicalRepRelMapEntry *entry)
+{
+	Assert(am_leader_apply_worker());
+
+	foreach_ptr(LogicalRepSubscriberIdx, idxinfo, entry->local_unique_indexes)
+		bms_free(idxinfo->indexkeys);
+
+	list_free(entry->local_unique_indexes);
+	entry->local_unique_indexes = NIL;
+}
+
+/*
  * Free the entry of a relation map cache.
  */
 static void
@@ -152,6 +167,9 @@ logicalrep_relmap_free_entry(LogicalRepRelMapEntry *entry)
 
 	if (entry->attrmap)
 		free_attrmap(entry->attrmap);
+
+	if (entry->local_unique_indexes != NIL)
+		free_local_unique_indexes(entry);
 }
 
 /*
@@ -353,6 +371,107 @@ logicalrep_rel_mark_updatable(LogicalRepRelMapEntry *entry)
 }
 
 /*
+ * Collect all local unique indexes that can be used for dependency tracking.
+ */
+static void
+collect_local_indexes(LogicalRepRelMapEntry *entry)
+{
+	List	   *idxlist;
+
+	if (entry->local_unique_indexes != NIL)
+		free_local_unique_indexes(entry);
+
+	entry->local_unique_indexes_collected = true;
+
+	idxlist = RelationGetIndexList(entry->localrel);
+
+	/* Quick exit if there are no indexes */
+	if (idxlist == NIL)
+		return;
+
+	/* Iterate indexes to list all usable indexes */
+	foreach_oid(idxoid, idxlist)
+	{
+		Relation	idxrel;
+		int			indnkeys;
+		AttrMap	   *attrmap;
+		Bitmapset  *indexkeys = NULL;
+		bool		suitable = true;
+
+		idxrel = index_open(idxoid, AccessShareLock);
+
+		/*
+		 * Check whether the index can be used for the dependency tracking.
+		 *
+		 * For simplification, the same condition as REPLICA IDENTITY FULL,
+		 * plus it must be a unique index.
+		 */
+		if (!(idxrel->rd_index->indisunique &&
+			  IsIndexUsableForReplicaIdentityFull(idxrel, entry->attrmap)))
+		{
+			index_close(idxrel, AccessShareLock);
+			continue;
+		}
+
+		indnkeys = idxrel->rd_index->indnkeyatts;
+		attrmap = entry->attrmap;
+
+		Assert(indnkeys);
+
+		/* Seek each attributes and add to a Bitmap */
+		for (int i = 0; i < indnkeys; i++)
+		{
+			AttrNumber localcol = idxrel->rd_index->indkey.values[i];
+			AttrNumber remotecol;
+
+			/* Skip computed column */
+			if (!AttributeNumberIsValid(localcol))
+				continue;
+
+			remotecol = attrmap->attnums[AttrNumberGetAttrOffset(localcol)];
+
+			/*
+			 * Skip if the column does not exist on publisher node. In this
+			 * case the replicated tuples always have NULL or default value.
+			 */
+			if (remotecol < 0)
+			{
+				suitable = false;
+				break;
+			}
+
+			/* Checks are passed, remember the attribute */
+			indexkeys = bms_add_member(indexkeys, remotecol);
+		}
+
+		index_close(idxrel, AccessShareLock);
+
+		/*
+		 * One of a column does not exist on publisher side, skip using index.
+		 */
+		if (!suitable)
+			continue;
+
+		/* This index is usable, store on memory */
+		if (indexkeys)
+		{
+			MemoryContext				oldctx;
+			LogicalRepSubscriberIdx	   *idxinfo;
+
+			oldctx = MemoryContextSwitchTo(LogicalRepRelMapContext);
+			idxinfo = palloc(sizeof(LogicalRepSubscriberIdx));
+			idxinfo->indexoid = idxoid;
+			idxinfo->indexkeys = bms_copy(indexkeys);
+			entry->local_unique_indexes =
+				lappend(entry->local_unique_indexes, idxinfo);
+			MemoryContextSwitchTo(oldctx);
+		}
+	}
+
+	list_free(idxlist);
+}
+
+/*
  * Open the local relation associated with the remote one.
  *
  * Rebuilds the Relcache mapping if it was invalidated by local DDL.
@@ -498,6 +617,13 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 		 */
 		entry->localindexoid = FindLogicalRepLocalIndex(entry->localrel, remoterel,
 														entry->attrmap);
+
+		/*
+		 * Leader must also collect all local unique indexes for dependency
+		 * tracking.
+		 */
+		if (am_leader_apply_worker())
+			collect_local_indexes(entry);
 
 		entry->localrelvalid = true;
 	}
@@ -770,6 +896,12 @@ logicalrep_partition_open(LogicalRepRelMapEntry *root,
 	 */
 	entry->localindexoid = FindLogicalRepLocalIndex(partrel, remoterel,
 													entry->attrmap);
+
+	/*
+	 * TODO: Parallel apply does not support the parallel apply for now.
+	 * Just mark local indexes are collected.
+	 */
+	entry->local_unique_indexes_collected = true;
 
 	entry->localrelvalid = true;
 
