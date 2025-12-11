@@ -1635,6 +1635,7 @@ LogicalRepRelation
 LogicalRepRollbackPreparedTxnData
 LogicalRepSequenceInfo
 LogicalRepStreamAbortData
+LogicalRepSubscriberIdx
 LogicalRepTupleData
 LogicalRepTyp
 LogicalRepWorker

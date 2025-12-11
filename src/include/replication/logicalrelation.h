@@ -16,6 +16,12 @@
 #include "catalog/index.h"
 #include "replication/logicalproto.h"
 
+typedef struct LogicalRepSubscriberIdx
+{
+	Oid			indexoid;	/* OID of the local key */
+	Bitmapset  *indexkeys;	/* Bitmap of key columns *on remote* */
+} LogicalRepSubscriberIdx;
+
 typedef struct LogicalRepRelMapEntry
 {
 	LogicalRepRelation remoterel;	/* key is remoterel.remoteid */
@@ -39,6 +45,9 @@ typedef struct LogicalRepRelMapEntry
 	XLogRecPtr	statelsn;
 
 	TransactionId last_depended_xid;
+
+	/* Local unique indexes. Used for dependency tracking */
+	List	   *local_unique_indexes;
 } LogicalRepRelMapEntry;
 
 extern void logicalrep_relmap_update(LogicalRepRelation *remoterel);
