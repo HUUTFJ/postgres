@@ -234,4 +234,47 @@ $node_subscriber->wait_for_log(qr/finish waiting for depended xid $xid/, $offset
 
 $h->query_safe("COMMIT;");
 
+# Ensure subscriber-local indexes are also used for the dependency tracking
+
+# Truncate the data for upcoming tests
+$node_publisher->safe_psql('postgres', "TRUNCATE TABLE regress_tab;");
+$node_publisher->wait_for_catchup('regress_sub');
+
+# Define an unique index on subscriber
+$node_subscriber->safe_psql('postgres',
+    "CREATE INDEX ON regress_tab (value);");
+
+# Attach an injection_point. Parallel workers would wait before the commit
+$node_subscriber->safe_psql('postgres',
+	"SELECT injection_points_attach('parallel-worker-before-commit','wait');"
+);
+
+# Insert a tuple on publisher. Parallel worker would wait at the injection
+# point
+$node_publisher->safe_psql('postgres',
+    "INSERT INTO regress_tab VALUES (1, 'would conflict');");
+
+# Wait until the parallel worker enters the injection point.
+$node_subscriber->wait_for_event('logical replication parallel worker',
+	'parallel-worker-before-commit');
+
+$offset = -s $node_subscriber->logfile;
+
+# Insert tuples on publisher again. This transaction is would wait because all
+# parallel workers wait till the previously launched worker commits.
+$node_publisher->safe_psql('postgres',
+    "INSERT INTO regress_tab VALUES (2, 'would not conflict');");
+
+# Verify the parallel worker waits for the transaction
+$str = $node_subscriber->wait_for_log(qr/wait for depended xid ([1-9][0-9]+)/, $offset);
+$xid = $str =~ /wait for depended xid ([1-9][0-9]+)/;
+
+# Insert a conflicting tuple on publisher. Leader worker would detect the conflict
+# and wait for the transaction to commit.
+$node_publisher->safe_psql('postgres',
+    "INSERT INTO regress_tab VALUES (3, 'would conflict');");
+
+# Verify the parallel worker waits for the same transaction
+$node_subscriber->wait_for_log(qr/wait for depended xid $xid/, $offset);
+
 done_testing();
