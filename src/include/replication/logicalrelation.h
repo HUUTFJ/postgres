@@ -16,6 +16,12 @@
 #include "catalog/index.h"
 #include "replication/logicalproto.h"
 
+typedef struct LogicalRepSubscriberIdx
+{
+	Oid			indexoid;	/* OID of the local key */
+	Bitmapset  *indexkeys;	/* Bitmap of key columns *on remote* */
+} LogicalRepSubscriberIdx;
+
 typedef struct LogicalRepRelMapEntry
 {
 	LogicalRepRelation remoterel;	/* key is remoterel.remoteid */
@@ -40,6 +46,10 @@ typedef struct LogicalRepRelMapEntry
 
 	TransactionId last_depended_xid;
 
+	/* Local unique indexes. Used for dependency tracking */
+	List	   *local_unique_indexes;
+	bool		local_unique_indexes_collected;
+
 	/*
 	 * Whether the relation can be applied in parallel or not. It is
 	 * distinglish whether defined triggers are the immutable or not.
@@ -51,6 +61,10 @@ typedef struct LogicalRepRelMapEntry
 	 * Note that we do not check the user-defined constraints here. PostgreSQL
 	 * has already assumed that CHECK constraints' conditions are immutable and
 	 * here follows the rule.
+	 *
+	 * XXX: Additonally, this can be false if the relation has expression
+	 * indexes. Because we cannot compute the hash value for the dependency
+	 * tracking.
 	 */
 	char		parallel_safe;
 } LogicalRepRelMapEntry;
