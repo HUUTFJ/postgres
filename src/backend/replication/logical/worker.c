@@ -550,9 +550,21 @@ typedef struct ApplySubXactData
 
 static ApplySubXactData subxact_data = {0, 0, InvalidTransactionId, NULL};
 
+/*
+ * Type of key used for dependency tracking.
+ *
+ * XXX: is it really needed?
+ */
+typedef enum LogicalRepKeyKind
+{
+	LOGICALREP_KEY_REPLICA_IDENTITY,
+	LOGICALREP_KEY_LOCAL_UNIQUE
+} LogicalRepKeyKind;
+
 typedef struct ReplicaIdentityKey
 {
 	Oid			relid;
+	LogicalRepKeyKind kind;
 	LogicalRepTupleData *data;
 } ReplicaIdentityKey;
 
@@ -710,7 +722,8 @@ static bool
 hash_replica_identity_compare(ReplicaIdentityKey *a, ReplicaIdentityKey *b)
 {
 	if (a->relid != b->relid ||
-		a->data->ncols != b->data->ncols)
+		a->data->ncols != b->data->ncols ||
+		a->kind != b->kind)
 		return false;
 
 	for (int i = 0; i < a->data->ncols; i++)
@@ -939,6 +952,7 @@ check_dependency_on_replica_identity(Oid relid,
 
 	rikey = palloc0_object(ReplicaIdentityKey);
 	rikey->relid = relid;
+	rikey->kind = LOGICALREP_KEY_REPLICA_IDENTITY;
 	rikey->data = ridata;
 
 	if (TransactionIdIsValid(new_depended_xid))
