@@ -870,6 +870,93 @@ check_and_append_xid_dependency(List *depends_on_xids,
 }
 
 /*
+ * Common function for registering dependency on a key. Used by both
+ * check_dependency_on_replica_identity and check_dependency_on_local_key.
+ */
+static void
+register_dependency_with_key(ReplicaIdentityKey *key, TransactionId new_depended_xid,
+							 List **depends_on_xids)
+{
+	ReplicaIdentityEntry   *rientry;
+	bool					found = false;
+	MemoryContext			oldctx;
+
+	oldctx = MemoryContextSwitchTo(ApplyContext);
+
+	if (TransactionIdIsValid(new_depended_xid))
+	{
+		rientry = replica_identity_insert(replica_identity_table, key,
+										  &found);
+
+		/*
+		 * Release the key built to search the entry, if the entry already
+		 * exists. Otherwise, initialize the remote_xid.
+		 */
+		if (found)
+		{
+			elog(DEBUG1,
+				 key->kind == LOGICALREP_KEY_REPLICA_IDENTITY ?
+				 "found conflicting replica identity change from %u" :
+				 "found conflicting local unique change from %u",
+				 rientry->remote_xid);
+
+			free_replica_identity_key(key);
+		}
+		else
+			rientry->remote_xid = InvalidTransactionId;
+	}
+	else
+	{
+		rientry = replica_identity_lookup(replica_identity_table, key);
+		free_replica_identity_key(key);
+	}
+
+	MemoryContextSwitchTo(oldctx);
+
+	/* Return if no entry found */
+	if (!rientry)
+		return;
+
+	Assert(!found || TransactionIdIsValid(rientry->remote_xid));
+
+	*depends_on_xids = check_and_append_xid_dependency(*depends_on_xids,
+													   &rientry->remote_xid,
+													   new_depended_xid);
+
+	/*
+	 * Remove the entry if it is registered for the streamed transactions. We
+	 * do not have to register an entry for them; The leader worker always
+	 * waits until the parallel worker finishes handling streamed transactions,
+	 * thus no need to consider the possiblity that upcoming parallel workers
+	 * would go ahead.
+	 */
+	if (TransactionIdIsValid(stream_xid) && !found)
+	{
+		free_replica_identity_key(rientry->keydata);
+		replica_identity_delete_item(replica_identity_table, rientry);
+	}
+
+	/*
+	 * Update the new depended xid into the entry if valid, the new xid could
+	 * be invalid if the transaction will be applied by the leader itself
+	 * which means all the changes will be committed before processing next
+	 * transaction, so no need to be depended on.
+	 */
+	else if (TransactionIdIsValid(new_depended_xid))
+		rientry->remote_xid = new_depended_xid;
+
+	/*
+	 * Remove the entry if the transaction has been committed and no new
+	 * dependency needs to be added.
+	 */
+	else if (!TransactionIdIsValid(rientry->remote_xid))
+	{
+		free_replica_identity_key(rientry->keydata);
+		replica_identity_delete_item(replica_identity_table, rientry);
+	}
+}
+
+/*
  * Check for dependencies on preceding transactions that modify the same key.
  * Returns the dependent transactions in 'depends_on_xids' and records the
  * current change.
@@ -883,10 +970,8 @@ check_dependency_on_replica_identity(Oid relid,
 	LogicalRepRelMapEntry *relentry;
 	LogicalRepTupleData *ridata;
 	ReplicaIdentityKey *rikey;
-	ReplicaIdentityEntry *rientry;
 	MemoryContext oldctx;
 	int			n_ri;
-	bool		found = false;
 
 	Assert(depends_on_xids);
 
@@ -955,73 +1040,87 @@ check_dependency_on_replica_identity(Oid relid,
 	rikey->kind = LOGICALREP_KEY_REPLICA_IDENTITY;
 	rikey->data = ridata;
 
-	if (TransactionIdIsValid(new_depended_xid))
-	{
-		rientry = replica_identity_insert(replica_identity_table, rikey,
-										  &found);
-
-		/*
-		 * Release the key built to search the entry, if the entry already
-		 * exists. Otherwise, initialize the remote_xid.
-		 */
-		if (found)
-		{
-			elog(DEBUG1, "found conflicting replica identity change from %u",
-				 rientry->remote_xid);
-
-			free_replica_identity_key(rikey);
-		}
-		else
-			rientry->remote_xid = InvalidTransactionId;
-	}
-	else
-	{
-		rientry = replica_identity_lookup(replica_identity_table, rikey);
-		free_replica_identity_key(rikey);
-	}
-
 	MemoryContextSwitchTo(oldctx);
 
-	/* Return if no entry found */
-	if (!rientry)
-		return;
+	register_dependency_with_key(rikey, new_depended_xid,
+								 depends_on_xids);
+}
 
-	Assert(!found || TransactionIdIsValid(rientry->remote_xid));
+/*
+ * Mostly same as check_dependency_on_replica_identity() but for local unique
+ * indexes.
+ */
+static void
+check_dependency_on_local_key(Oid relid,
+							  LogicalRepTupleData *original_data,
+							  TransactionId new_depended_xid,
+							  List **depends_on_xids)
+{
+	LogicalRepRelMapEntry *relentry;
+	LogicalRepTupleData *ridata;
+	ReplicaIdentityKey *rikey;
+	MemoryContext oldctx;
 
-	*depends_on_xids = check_and_append_xid_dependency(*depends_on_xids,
-													   &rientry->remote_xid,
-													   new_depended_xid);
+	Assert(depends_on_xids);
 
-	/*
-	 * Remove the entry if it is registered for the streamed transactions. We
-	 * do not have to register an entry for them; The leader worker always
-	 * waits until the parallel worker finishes handling streamed transactions,
-	 * thus no need to consider the possiblity that upcoming parallel workers
-	 * would go ahead.
-	 */
-	if (TransactionIdIsValid(stream_xid) && !found)
+	/* Search for existing entry */
+	relentry = logicalrep_get_relentry(relid);
+
+	Assert(relentry);
+
+	foreach_ptr(LogicalRepSubscriberIdx, idxinfo, relentry->local_unique_indexes)
 	{
-		free_replica_identity_key(rientry->keydata);
-		replica_identity_delete_item(replica_identity_table, rientry);
-	}
+		int			columns = bms_num_members(idxinfo->indexkeys);
+		bool		suitable = true;
 
-	/*
-	 * Update the new depended xid into the entry if valid, the new xid could
-	 * be invalid if the transaction will be applied by the leader itself
-	 * which means all the changes will be committed before processing next
-	 * transaction, so no need to be depended on.
-	 */
-	else if (TransactionIdIsValid(new_depended_xid))
-		rientry->remote_xid = new_depended_xid;
+		Assert(columns);
 
-	/*
-	 * Remove the entry if the transaction has been committed and no new
-	 * dependency needs to be added.
-	 */
-	else if (!TransactionIdIsValid(rientry->remote_xid))
-	{
-		free_replica_identity_key(rientry->keydata);
-		replica_identity_delete_item(replica_identity_table, rientry);
+		for (int i = 0; i < original_data->ncols; i++)
+		{
+			if (!bms_is_member(i, idxinfo->indexkeys))
+				continue;
+
+			/* XXX should we allow NULL here? */
+			if (original_data->colstatus[i] == LOGICALREP_COLUMN_UNCHANGED)
+			{
+				suitable = false;
+				break;
+			}
+		}
+
+		if (!suitable)
+			continue;
+
+		oldctx = MemoryContextSwitchTo(ApplyContext);
+
+		/* Allocate space for replica identity values */
+		ridata = palloc0_object(LogicalRepTupleData);
+		ridata->colvalues = palloc0_array(StringInfoData, columns);
+		ridata->colstatus = palloc0_array(char, columns);
+		ridata->ncols = columns;
+
+		for (int i_original = 0, i_key = 0; i_original < original_data->ncols; i_original++)
+		{
+			StringInfo	original_colvalue = &original_data->colvalues[i_original];
+
+			if (!bms_is_member(i_original, idxinfo->indexkeys))
+				continue;
+
+			initStringInfoExt(&ridata->colvalues[i_key], original_colvalue->len + 1);
+			appendStringInfoString(&ridata->colvalues[i_key], original_colvalue->data);
+			ridata->colstatus[i_key] = original_data->colstatus[i_original];
+			i_key++;
+		}
+
+		rikey = palloc0_object(ReplicaIdentityKey);
+		rikey->relid = relid;
+		rikey->kind = LOGICALREP_KEY_LOCAL_UNIQUE;
+		rikey->data = ridata;
+
+		MemoryContextSwitchTo(oldctx);
+
+		register_dependency_with_key(rikey, new_depended_xid,
+									 depends_on_xids);
 	}
 }
 
@@ -1151,6 +1250,9 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 			check_dependency_on_replica_identity(relid, &newtup,
 												 new_depended_xid,
 												 &depends_on_xids);
+			check_dependency_on_local_key(relid, &newtup,
+										  new_depended_xid,
+										  &depends_on_xids);
 			break;
 
 		case LOGICAL_REP_MSG_UPDATE:
@@ -1158,13 +1260,21 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 										   &newtup);
 
 			if (has_oldtup)
+			{
 				check_dependency_on_replica_identity(relid, &oldtup,
 													 new_depended_xid,
 													 &depends_on_xids);
+				check_dependency_on_local_key(relid, &oldtup,
+											  new_depended_xid,
+											  &depends_on_xids);
+			}
 
 			check_dependency_on_replica_identity(relid, &newtup,
 												 new_depended_xid,
 												 &depends_on_xids);
+			check_dependency_on_local_key(relid, &newtup,
+										  new_depended_xid,
+										  &depends_on_xids);
 			break;
 
 		case LOGICAL_REP_MSG_DELETE:
@@ -1172,6 +1282,9 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 			check_dependency_on_replica_identity(relid, &oldtup,
 												 new_depended_xid,
 												 &depends_on_xids);
+			check_dependency_on_local_key(relid, &oldtup,
+										  new_depended_xid,
+										  &depends_on_xids);
 			break;
 
 		case LOGICAL_REP_MSG_TRUNCATE:
