@@ -1211,6 +1211,59 @@ check_dependency_on_rel(LogicalRepRelId relid, TransactionId new_depended_xid,
 }
 
 /*
+ * Check the parallelizability of applying changes for the relation.
+ * Append the lastly dispatched transaction in in 'depends_on_xids' if the
+ * relation is parallel unsafe.
+ */
+static void
+check_dependency_for_parallel_safety(LogicalRepRelId relid,
+									 TransactionId new_depended_xid,
+									 List **depends_on_xids)
+{
+	LogicalRepRelMapEntry *relentry;
+
+	/* Quick exit if no transactions have been dispatched */
+	if (!TransactionIdIsValid(last_remote_xid))
+		return;
+
+	relentry = logicalrep_get_relentry(relid);
+
+	/*
+	 * Gather information for local triggres if not yet. We require to be in a
+	 * transaction state because system catalogs are read.
+	 */
+	if (relentry->parallel_safe == LOGICALREP_PARALLEL_UNKNOWN)
+	{
+		bool	needs_start = !IsTransactionOrTransactionBlock();
+
+		if (needs_start)
+			StartTransactionCommand();
+
+		logicalrep_rel_load(NULL, relid, AccessShareLock);
+
+		/*
+		 * Close the transaction if we start here. We must not abort because it
+		 * would release all session-level locks, such as the stream lock, and
+		 * break the deadlock detection mechanism between LA and PA. The
+		 * outcome is the same regardless of the end status, since the
+		 * transaction did not modify any tuples.
+		 */
+		if (needs_start)
+			CommitTransactionCommand();
+
+		Assert(relentry->parallel_safe != LOGICALREP_PARALLEL_UNKNOWN);
+	}
+
+	/* Do nothing for parallel safe relations */
+	if (relentry->parallel_safe == LOGICALREP_PARALLEL_SAFE)
+		return;
+
+	*depends_on_xids = check_and_append_xid_dependency(*depends_on_xids,
+													   &last_remote_xid,
+													   new_depended_xid);
+}
+
+/*
  * Check dependencies related to the current change by determining if the
  * modification impacts the same row or table as another ongoing transaction. If
  * needed, instruct parallel apply workers to wait for these preceding
@@ -1271,6 +1324,8 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 			check_dependency_on_local_key(relid, &newtup,
 										  new_depended_xid,
 										  &depends_on_xids);
+			check_dependency_for_parallel_safety(relid, new_depended_xid,
+												 &depends_on_xids);
 			break;
 
 		case LOGICAL_REP_MSG_UPDATE:
@@ -1285,6 +1340,8 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 				check_dependency_on_local_key(relid, &oldtup,
 											  new_depended_xid,
 											  &depends_on_xids);
+				check_dependency_for_parallel_safety(relid, new_depended_xid,
+													 &depends_on_xids);
 			}
 
 			check_dependency_on_replica_identity(relid, &newtup,
@@ -1293,6 +1350,8 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 			check_dependency_on_local_key(relid, &newtup,
 										  new_depended_xid,
 										  &depends_on_xids);
+			check_dependency_for_parallel_safety(relid, new_depended_xid,
+												 &depends_on_xids);
 			break;
 
 		case LOGICAL_REP_MSG_DELETE:
@@ -1303,6 +1362,8 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 			check_dependency_on_local_key(relid, &oldtup,
 										  new_depended_xid,
 										  &depends_on_xids);
+			check_dependency_for_parallel_safety(relid, new_depended_xid,
+												 &depends_on_xids);
 			break;
 
 		case LOGICAL_REP_MSG_TRUNCATE:
@@ -1315,8 +1376,13 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 			 * modified the same table.
 			 */
 			foreach_int(truncated_relid, remote_relids)
+			{
 				check_dependency_on_rel(truncated_relid, new_depended_xid,
 										&depends_on_xids);
+				check_dependency_for_parallel_safety(truncated_relid,
+													 new_depended_xid,
+													 &depends_on_xids);
+			}
 
 			break;
 

@@ -49,6 +49,20 @@ typedef struct LogicalRepRelMapEntry
 	/* Local unique indexes. Used for dependency tracking */
 	List	   *local_unique_indexes;
 	bool		local_unique_indexes_collected;
+
+	/*
+	 * Whether the relation can be applied in parallel or not. It is
+	 * distinglish whether defined triggers are the immutable or not.
+	 *
+	 * Theoretically, we can determine the parallelizability for each type of
+	 * replication messages, INSERT/UPDATE/DELETE/TRUNCATE. But it is not done
+	 * yet to reduce the number of attributes.
+	 *
+	 * Note that we do not check the user-defined constraints here. PostgreSQL
+	 * has already assumed that CHECK constraints' conditions are immutable and
+	 * here follows the rule.
+	 */
+	char		parallel_safe;
 } LogicalRepRelMapEntry;
 
 extern void logicalrep_relmap_update(LogicalRepRelation *remoterel);
@@ -67,5 +81,9 @@ extern Oid	GetRelationIdentityOrPK(Relation rel);
 extern int	logicalrep_get_num_rels(void);
 extern void logicalrep_write_all_rels(StringInfo out);
 extern LogicalRepRelMapEntry *logicalrep_get_relentry(LogicalRepRelId remoteid);
+
+#define LOGICALREP_PARALLEL_SAFE		's'
+#define LOGICALREP_PARALLEL_RESTRICTED	'r'
+#define LOGICALREP_PARALLEL_UNKNOWN		'u'
 
 #endif							/* LOGICALRELATION_H */

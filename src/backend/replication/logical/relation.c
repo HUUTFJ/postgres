@@ -21,7 +21,9 @@
 #include "access/genam.h"
 #include "access/table.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_proc.h"
 #include "catalog/pg_subscription_rel.h"
+#include "commands/trigger.h"
 #include "executor/executor.h"
 #include "nodes/makefuncs.h"
 #include "replication/logicalrelation.h"
@@ -177,6 +179,10 @@ logicalrep_relmap_free_entry(LogicalRepRelMapEntry *entry)
  *
  * Called when new relation mapping is sent by the publisher to update
  * our expected view of incoming data from said publisher.
+ *
+ * Note that we do not check the user-defined constraints here. PostgreSQL has
+ * already assumed that CHECK constraints' conditions are immutable and here
+ * follows the rule.
  */
 void
 logicalrep_relmap_update(LogicalRepRelation *remoterel)
@@ -226,6 +232,8 @@ logicalrep_relmap_update(LogicalRepRelation *remoterel)
 		(remoterel->relkind == 0) ? RELKIND_RELATION : remoterel->relkind;
 
 	entry->remoterel.attkeys = bms_copy(remoterel->attkeys);
+
+	entry->parallel_safe = LOGICALREP_PARALLEL_UNKNOWN;
 	MemoryContextSwitchTo(oldctx);
 }
 
@@ -472,6 +480,48 @@ collect_local_indexes(LogicalRepRelMapEntry *entry)
 }
 
 /*
+ * Check all local triggers for the relation to see the parallelizability.
+ *
+ * We regard relations as applicable in parallel if all triggers are immutable.
+ * Result is directly set to LogicalRepRelMapEntry::parallel_safe.
+ */
+static void
+check_defined_triggers(LogicalRepRelMapEntry *entry)
+{
+	TriggerDesc *trigdesc = entry->localrel->trigdesc;
+
+	/* Quick exit if triffer is not defined */
+	if (trigdesc == NULL)
+	{
+		entry->parallel_safe = LOGICALREP_PARALLEL_SAFE;
+		return;
+	}
+
+	/* Seek triggers one by one to see the volatility */
+	for (int i = 0; i < trigdesc->numtriggers; i++)
+	{
+		Trigger *trigger = &trigdesc->triggers[i];
+
+		Assert(OidIsValid(trigger->tgfoid));
+
+		/* Skip if the trigger is not enabled for logical replication */
+		if (trigger->tgenabled == TRIGGER_DISABLED ||
+			trigger->tgenabled == TRIGGER_FIRES_ON_ORIGIN)
+			continue;
+
+		/* Check the volatility of the trigger. Exit if it is not immutable */
+		if (func_volatile(trigger->tgfoid) != PROVOLATILE_IMMUTABLE)
+		{
+			entry->parallel_safe = LOGICALREP_PARALLEL_RESTRICTED;
+			return;
+		}
+	}
+
+	/* All triggers are immutable, set as parallel safe */
+	entry->parallel_safe = LOGICALREP_PARALLEL_SAFE;
+}
+
+/*
  * Actual workhorse for logicalrep_rel_open().
  *
  * Caller must specify *either* entry or key. If the entry is specified, its
@@ -633,7 +683,10 @@ logicalrep_rel_load(LogicalRepRelMapEntry *entry, LogicalRepRelId remoteid,
 		 * tracking.
 		 */
 		if (am_leader_apply_worker())
+		{
 			collect_local_indexes(entry);
+			check_defined_triggers(entry);
+		}
 
 		entry->localrelvalid = true;
 	}
