@@ -135,10 +135,13 @@ is ($result, 5, 'updates are also replicated to subscriber');
 
 $node_subscriber->safe_psql('postgres',
     "ALTER SUBSCRIPTION regress_sub DISABLE;");
-$node_subscriber->safe_psql('postgres',
-    "ALTER SUBSCRIPTION regress_sub SET (two_phase = on);");
-$node_subscriber->safe_psql('postgres',
-    "ALTER SUBSCRIPTION regress_sub ENABLE;");
+$node_subscriber->poll_query_until('postgres',
+	"SELECT count(*) = 0 FROM pg_stat_activity WHERE backend_type = 'logical replication apply worker'"
+);
+$node_subscriber->safe_psql(
+	'postgres', "
+    ALTER SUBSCRIPTION regress_sub SET (two_phase = on);
+    ALTER SUBSCRIPTION regress_sub ENABLE;");
 
 $result = $node_subscriber->safe_psql('postgres',
     "SELECT count(1) FROM pg_stat_activity WHERE backend_type = 'logical replication parallel worker'");
