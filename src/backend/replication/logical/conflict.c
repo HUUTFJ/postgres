@@ -519,21 +519,7 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 
 			break;
 
-		case CT_UPDATE_MISSING:
-			if (remote_desc)
-			{
-				if (search_desc)
-					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be applied by using %s."),
-									 remote_desc, search_desc);
-				else
-					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be applied."),
-									 remote_desc);
-			}
-
-			break;
-
+			case CT_UPDATE_MISSING:
 			case CT_DELETE_MISSING:
 			if (remote_desc)
 			{
