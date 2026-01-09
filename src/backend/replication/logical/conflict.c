@@ -463,32 +463,18 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 
 		case CT_UPDATE_DELETED:
 			if (remote_desc)
-				appendStringInfo(&err_detail,
-								 _("Remote row %s was applied but previously deleted locally.\n"),
-								 remote_desc);
-
-			if (search_desc && local_desc)
 			{
-				if (localorigin == InvalidRepOriginId)
+				if (search_desc)
 					appendStringInfo(&err_detail,
-									 _("Local row %s detected by %s was previously deleted locally in transaction %u at %s."),
-									 local_desc, search_desc, localxmin,
-									 timestamptz_to_str(localts));
-				else if (replorigin_by_oid(localorigin, true, &origin_name))
-					appendStringInfo(&err_detail,
-									_("Local row %s detected by %s was previously deleted by a different origin \"%s\" in transaction %u at %s."),
-									local_desc, search_desc,
-									origin_name, localxmin,
-									timestamptz_to_str(localts));
-
-				/* The origin that modified this row has been removed. */
+									 _("Remote row %s could not be applied by using %s."),
+									 remote_desc, search_desc);
 				else
 					appendStringInfo(&err_detail,
-									_("Local row %s detected by %s was previously deleted by a non-existent origin in transaction %u at %s."),
-									local_desc, search_desc, localxmin,
-									timestamptz_to_str(localts));
+									 _("Remote row %s could not be applied."),
+									 remote_desc);
 			}
-			else if (!search_desc && local_desc)
+
+			if (local_desc)
 			{
 				if (localorigin == InvalidRepOriginId)
 					appendStringInfo(&err_detail,
@@ -497,36 +483,18 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 									 timestamptz_to_str(localts));
 				else if (replorigin_by_oid(localorigin, true, &origin_name))
 					appendStringInfo(&err_detail,
-									 _("Local row %s was previously deleted by a different origin \"%s\" in transaction %u at %s."),
-									 local_desc, origin_name, localxmin,
-									 timestamptz_to_str(localts));
+									_("Local row %s was previously deleted by a different origin \"%s\" in transaction %u at %s."),
+									local_desc,
+									origin_name, localxmin,
+									timestamptz_to_str(localts));
 
 				/* The origin that modified this row has been removed. */
 				else
 					appendStringInfo(&err_detail,
-									 _("Local row %s was previously deleted by a non-existent origin in transaction %u at %s."),
-									 local_desc, localxmin,
-									 timestamptz_to_str(localts));
-			}
-			else if (search_desc && !local_desc)
-			{
-				if (localorigin == InvalidRepOriginId)
-					appendStringInfo(&err_detail,
-									 _("Local row detected by %s was previously deleted locally in transaction %u at %s."),
-									 search_desc, localxmin,
-									 timestamptz_to_str(localts));
-				else if (replorigin_by_oid(localorigin, true, &origin_name))
-					appendStringInfo(&err_detail,
-									 _("Local row detected by %s was previously deleted by a different origin \"%s\" in transaction %u at %s."),
-									 search_desc, origin_name, localxmin,
-									 timestamptz_to_str(localts));
+									_("Local row %s was previously deleted by a non-existent origin in transaction %u at %s."),
+									local_desc, localxmin,
+									timestamptz_to_str(localts));
 
-				/* The origin that modified this row has been removed. */
-				else
-					appendStringInfo(&err_detail,
-									 _("Local row detected by %s was previously deleted by a non-existent origin in transaction %u at %s."),
-									 search_desc, localxmin,
-									 timestamptz_to_str(localts));
 			}
 			else
 			{
@@ -537,52 +505,48 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 									 timestamptz_to_str(localts));
 				else if (replorigin_by_oid(localorigin, true, &origin_name))
 					appendStringInfo(&err_detail,
-									 _("Local row was previously deleted by a different origin \"%s\" in transaction %u at %s."),
-									 origin_name, localxmin,
-									 timestamptz_to_str(localts));
+									_("Local row was previously deleted by a different origin \"%s\" in transaction %u at %s."),
+									origin_name, localxmin,
+									timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
 				else
 					appendStringInfo(&err_detail,
-									 _("Local row was previously deleted by a non-existent origin in transaction %u at %s."),
-									 localxmin,
-									 timestamptz_to_str(localts));
+									_("Local row was previously deleted by a non-existent origin in transaction %u at %s."),
+									localxmin,
+									timestamptz_to_str(localts));
 			}
 
 			break;
 
 		case CT_UPDATE_MISSING:
-			if (search_desc && remote_desc)
-				appendStringInfo(&err_detail,
-								 _("Remote row %s was applied but could not be found local row by using %s"),
-								 remote_desc, search_desc);
-			else if (!search_desc && remote_desc)
-				appendStringInfo(&err_detail,
-								 _("Remote row %s was applied but could not be found local row."),
-								 remote_desc);
-			else if (search_desc && !remote_desc)
-				appendStringInfo(&err_detail,
-								 _("Remote row was applied but could not be found local row by using %s."),
-								 search_desc);
-			else
-				appendStringInfo(&err_detail,
-								 _("Remote row could not be found."));
+			if (remote_desc)
+			{
+				if (search_desc)
+					appendStringInfo(&err_detail,
+									 _("Remote row %s could not be applied by using %s."),
+									 remote_desc, search_desc);
+				else
+					appendStringInfo(&err_detail,
+									 _("Remote row %s could not be applied."),
+									 remote_desc);
+			}
+
 			break;
 
 			case CT_DELETE_MISSING:
-			if (remote_desc && search_desc)
-				appendStringInfo(&err_detail,
-								 _("Remote row %s could not be found by using %s."),
-								 remote_desc, search_desc);
-			else if (!remote_desc && search_desc)
-				appendStringInfo(&err_detail,
-								 _("Remote row could not be found by using %s."),
-								 search_desc);
-			else if (remote_desc && !search_desc)
-				appendStringInfo(&err_detail,
-								 _("Remote row %s could not be found."),
-								 remote_desc);
-			else
-				appendStringInfo(&err_detail,
-								 _("Remote row could not be found."));
+			if (remote_desc)
+			{
+				if (search_desc)
+					appendStringInfo(&err_detail,
+									 _("Remote row %s could not be found by using %s."),
+									 remote_desc, search_desc);
+				else
+					appendStringInfo(&err_detail,
+									 _("Remote row %s could not be found."),
+									 remote_desc);
+			}
+
 			break;
 
 		case CT_DELETE_ORIGIN_DIFFERS:
