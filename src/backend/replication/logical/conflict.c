@@ -48,14 +48,14 @@ static void build_tuple_value_details(EState *estate, ResultRelInfo *relinfo,
 									  ConflictType type,
 									  char **key_desc,
 									  TupleTableSlot *searchslot, char **search_desc,
-								  	  TupleTableSlot *localslot, char **local_desc,
-						  			  TupleTableSlot *remoteslot, char **remote_desc,
+									  TupleTableSlot *localslot, char **local_desc,
+									  TupleTableSlot *remoteslot, char **remote_desc,
 									  Oid indexoid);
 static char *build_index_value_desc(EState *estate, Relation localrel,
 									TupleTableSlot *slot, Oid indexoid);
 
 /*
- * Get the xmin and commit timestamp data (origin and timestamp) associated
+ * Get the xmin and commit timestamp data (origin and timestamp) associatedq
  * with the provided local row.
  *
  * Return true if the commit timestamp data was found, false otherwise.
@@ -287,26 +287,30 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 				{
 					if (localorigin == InvalidRepOriginId)
 						appendStringInfo(&err_detail,
-										 _("Local row %s already exists, modified locally in transaction %u at %s."),
-										 local_desc, localxmin,
+										 _("Unique index \"%s\" rejects applying due to local row %s, modified locally in transaction %u at %s."),
+										 get_rel_name(indexoid), local_desc,
+										 localxmin,
 										 timestamptz_to_str(localts));
 					else if (replorigin_by_oid(localorigin, true, &origin_name))
 						appendStringInfo(&err_detail,
-										 _("Local row %s already exists, modified by origin \"%s\" in transaction %u at %s."),
-										 local_desc, origin_name, localxmin,
+										 _("Unique index \"%s\" rejects applying due to local row %s, modified by origin \"%s\" in transaction %u at %s."),
+										 get_rel_name(indexoid), local_desc,
+										 origin_name, localxmin,
 										 timestamptz_to_str(localts));
 
 					/* The origin that modified this row has been removed. */
 					else
 						appendStringInfo(&err_detail,
-										 _("Local row %s already exists, modified by a non-existent origin in transaction %u at %s."),
-										 local_desc, localxmin,
+										 _("Unique index \"%s\" rejects applying due to local row %s, modified by a non-existent origin in transaction %u at %s."),
+										 get_rel_name(indexoid), local_desc,
+										 localxmin,
 										 timestamptz_to_str(localts));
 				}
 				else
 					appendStringInfo(&err_detail,
-									 _("Local row %s already exists, modified in transaction %u."),
-									 local_desc, localxmin);
+									 _("Unique index \"%s\" rejects applying due to local row %s, modified in transaction %u."),
+									 get_rel_name(indexoid), local_desc,
+									 localxmin);
 			}
 			else if (key_desc && !local_desc)
 			{
@@ -343,27 +347,28 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 				{
 					if (localorigin == InvalidRepOriginId)
 						appendStringInfo(&err_detail,
-										 _("A conflicting row already exists, modified locally in transaction %u at %s."),
-										 localxmin,
+										 _("Remote row violates unique constraint \"%s\", modified locally in transaction %u at %s."),
+										 get_rel_name(indexoid), localxmin,
 										 timestamptz_to_str(localts));
 					else if (replorigin_by_oid(localorigin, true, &origin_name))
 						appendStringInfo(&err_detail,
-										 _("A conflicting row already exists, modified by origin \"%s\" in transaction %u at %s."),
-										 origin_name, localxmin,
+										 _("Remote row violates unique constraint \"%s\", modified by origin \"%s\" in transaction %u at %s."),
+										 get_rel_name(indexoid), origin_name,
+										 localxmin,
 										 timestamptz_to_str(localts));
 
 					/* The origin that modified this row has been removed. */
 					else
 						appendStringInfo(&err_detail,
-										 _("A conflicting row already exists, modified by a non-existent origin in transaction %u at %s."),
-										 localxmin,
+										 _("Remote row violates unique constraint \"%s\", modified by a non-existent origin in transaction %u at %s."),
+										 get_rel_name(indexoid), localxmin,
 										 timestamptz_to_str(localts));
 				}
 				else
 					appendStringInfo(&err_detail,
-									 _("A conflicting row already exists, modified in transaction %u."),
-									 localxmin);
-			}			
+									 _("Remote row violates unique constraint \"%s\", modified in transaction %u."),
+									 get_rel_name(indexoid), localxmin);
+			}
 
 			break;
 
