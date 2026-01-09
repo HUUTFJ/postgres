@@ -466,11 +466,11 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 			{
 				if (search_desc)
 					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be found by using %s.\n"),
+									 _("Could not find remote row %s by using %s.\n"),
 									 remote_desc, search_desc);
 				else
 					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be found.\n"),
+									 _("Could not find remote row %s.\n"),
 									 remote_desc);
 			}
 
@@ -522,11 +522,11 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 		case CT_UPDATE_MISSING:
 			if (search_desc && remote_desc)
 				appendStringInfo(&err_detail,
-								 _("Remote row %s could not be found by using %s."),
+								 _("Could not find remote row %s by using %s."),
 								 remote_desc, search_desc);
 			else if (!search_desc && remote_desc)
 				appendStringInfo(&err_detail,
-								 _("Remote row %s could not be found."),
+								 _("Could not find remote row %s."),
 								 remote_desc);
 			else if (search_desc && !remote_desc)
 				appendStringInfo(&err_detail,
