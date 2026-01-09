@@ -229,7 +229,7 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 			Assert(OidIsValid(indexoid) &&
 				   CheckRelationOidLockedByMe(indexoid, RowExclusiveLock, true));
 
-			if (err_msg->len == 0)
+			if (err_msg->len == 0 && remote_desc)
 			{
 				if (search_desc)
 					appendStringInfo(&err_detail,
@@ -241,120 +241,426 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 									 remote_desc);
 			}
 
-			if (localts)
+			if (key_desc && local_desc)
 			{
-				if (localorigin == InvalidRepOriginId)
-					appendStringInfo(&err_detail,
-									 _("Key %s already exists in unique index \"%s\", modified locally in transaction %u at %s: local row %s."),
-									 key_desc, get_rel_name(indexoid),
-									 localxmin, timestamptz_to_str(localts),
-									 local_desc);
-				else if (replorigin_by_oid(localorigin, true, &origin_name))
-					appendStringInfo(&err_detail,
-									 _("Key %s already exists in unique index \"%s\", modified by origin \"%s\" in transaction %u at %s: local row %s."),
-									 key_desc, get_rel_name(indexoid),
-									 origin_name, localxmin,
-									 timestamptz_to_str(localts), local_desc);
+				if (localts)
+				{
+					if (localorigin == InvalidRepOriginId)
+						appendStringInfo(&err_detail,
+										 _("Key %s already exists in unique index \"%s\", modified locally in transaction %u at %s: local row %s."),
+										 key_desc, get_rel_name(indexoid),
+										 localxmin,
+										 timestamptz_to_str(localts),
+										 local_desc);
+					else if (replorigin_by_oid(localorigin, true, &origin_name))
+						appendStringInfo(&err_detail,
+										 _("Key %s already exists in unique index \"%s\", modified by origin \"%s\" in transaction %u at %s: local row %s."),
+										 key_desc, get_rel_name(indexoid),
+										origin_name, localxmin,
+										timestamptz_to_str(localts),
+										local_desc);
 
-				/*
-				 * The origin that modified this row has been removed. This
-				 * can happen if the origin was created by a different apply
-				 * worker and its associated subscription and origin were
-				 * dropped after updating the row, or if the origin was
-				 * manually dropped by the user.
-				 */
+					/*
+					 * The origin that modified this row has been removed. This
+					 * can happen if the origin was created by a different
+					 * apply worker and its associated subscription and origin
+					 * were dropped after updating the row, or if the origin
+					 * was manually dropped by the user.
+					 */
+					else
+						appendStringInfo(&err_detail,
+										 _("Key %s already exists in unique index \"%s\", modified by a non-existent origin in transaction %u at %s: local row %s."),
+										 key_desc, get_rel_name(indexoid),
+										 localxmin,
+										 timestamptz_to_str(localts),
+										 local_desc);
+				}
 				else
 					appendStringInfo(&err_detail,
-									 _("Key %s already exists in unique index \"%s\", modified by a non-existent origin in transaction %u at %s: local row %s."),
+									 _("Key %s already exists in unique index \"%s\", modified in transaction %u: local row %s."),
 									 key_desc, get_rel_name(indexoid),
-									 localxmin, timestamptz_to_str(localts),
-									 local_desc);
+									 localxmin, local_desc);
+			}
+			else if (!key_desc && local_desc)
+			{
+				if (localts)
+				{
+					if (localorigin == InvalidRepOriginId)
+						appendStringInfo(&err_detail,
+										 _("Local row %s already exists, modified locally in transaction %u at %s."),
+										 local_desc, localxmin,
+										 timestamptz_to_str(localts));
+					else if (replorigin_by_oid(localorigin, true, &origin_name))
+						appendStringInfo(&err_detail,
+										 _("Local row %s already exists, modified by origin \"%s\" in transaction %u at %s."),
+										 local_desc, origin_name, localxmin,
+										 timestamptz_to_str(localts));
+
+					/* The origin that modified this row has been removed. */
+					else
+						appendStringInfo(&err_detail,
+										 _("Local row %s already exists, modified by a non-existent origin in transaction %u at %s."),
+										 local_desc, localxmin,
+										 timestamptz_to_str(localts));
+				}
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row %s already exists, modified in transaction %u."),
+									 local_desc, localxmin);
+			}
+			else if (key_desc && !local_desc)
+			{
+				if (localts)
+				{
+					if (localorigin == InvalidRepOriginId)
+						appendStringInfo(&err_detail,
+										 _("Key %s already exists in unique index \"%s\", modified locally in transaction %u at %s."),
+										 key_desc, get_rel_name(indexoid), localxmin,
+										 timestamptz_to_str(localts));
+					else if (replorigin_by_oid(localorigin, true, &origin_name))
+						appendStringInfo(&err_detail,
+										 _("Key %s already exists in unique index \"%s\", modified by origin \"%s\" in transaction %u at %s."),
+										 key_desc, get_rel_name(indexoid), origin_name, localxmin,
+										 timestamptz_to_str(localts));
+
+					/* The origin that modified this row has been removed. */
+					else
+						appendStringInfo(&err_detail,
+										 _("Key %s already exists in unique index \"%s\", modified by a non-existent origin in transaction %u at %s."),
+										 key_desc, get_rel_name(indexoid),
+										 localxmin,
+										 timestamptz_to_str(localts));
+				}
+				else
+					appendStringInfo(&err_detail,
+									 _("Key %s already exists in unique index \"%s\", modified in transaction %u."),
+									 key_desc, get_rel_name(indexoid),
+									 localxmin);
 			}
 			else
-				appendStringInfo(&err_detail,
-								 _("Key %s already exists in unique index \"%s\", modified in transaction %u: local row %s."),
-								 key_desc, get_rel_name(indexoid), localxmin,
-								 local_desc);
+			{
+				if (localts)
+				{
+					if (localorigin == InvalidRepOriginId)
+						appendStringInfo(&err_detail,
+										 _("A conflicting row already exists, modified locally in transaction %u at %s."),
+										 localxmin,
+										 timestamptz_to_str(localts));
+					else if (replorigin_by_oid(localorigin, true, &origin_name))
+						appendStringInfo(&err_detail,
+										 _("A conflicting row already exists, modified by origin \"%s\" in transaction %u at %s."),
+										 origin_name, localxmin,
+										 timestamptz_to_str(localts));
+
+					/* The origin that modified this row has been removed. */
+					else
+						appendStringInfo(&err_detail,
+										 _("A conflicting row already exists, modified by a non-existent origin in transaction %u at %s."),
+										 localxmin,
+										 timestamptz_to_str(localts));
+				}
+				else
+					appendStringInfo(&err_detail,
+									 _("A conflicting row already exists, modified in transaction %u."),
+									 localxmin);
+			}			
 
 			break;
 
 		case CT_UPDATE_ORIGIN_DIFFERS:
-			if (localorigin == InvalidRepOriginId)
+			if (remote_desc)
 				appendStringInfo(&err_detail,
-								 _("Local row %s detected by %s is being updated to the remote row %s, but it was previously modified locally in transaction %u at %s."),
-								 local_desc, search_desc, remote_desc,
-								 localxmin, timestamptz_to_str(localts));
-			else if (replorigin_by_oid(localorigin, true, &origin_name))
-				appendStringInfo(&err_detail,
-								 _("Local row %s detected by %s is being updated to the remote row %s, but it was previously modified by origin \"%s\" in transaction %u at %s."),
-								 local_desc, search_desc, remote_desc,
-								 origin_name, localxmin,
-								 timestamptz_to_str(localts));
+								 _("Remote row %s was applied but previously modified by different origin.\n"),
+								 remote_desc);
 
-			/* The origin that modified this row has been removed. */
+			if (search_desc && local_desc)
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row %s detected by %s is being updated, but it was previously modified locally in transaction %u at %s."),
+									 local_desc, search_desc, localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									_("Local row %s detected by %s is being updated, but it was previously modified by origin \"%s\" in transaction %u at %s."),
+									local_desc, search_desc, origin_name,
+									localxmin, timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									_("Local row %s detected by %s is being updated, but it was previously modified by a non-existent origin in transaction %u at %s."),
+									local_desc, search_desc, localxmin,
+									timestamptz_to_str(localts));
+			}
+			else if (!search_desc && local_desc)
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row %s is being updated, but it was previously modified locally in transaction %u at %s."),
+									 local_desc, localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									 _("Local row %s is being updated, but it was previously modified by origin \"%s\" in transaction %u at %s."),
+									 local_desc, origin_name, localxmin,
+									 timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row %s is being updated, but it was previously modified by a non-existent origin in transaction %u at %s."),
+									 local_desc, localxmin,
+									 timestamptz_to_str(localts));
+			}
+			else if (search_desc && !local_desc)
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row detected by %s is being updated, but it was previously modified locally in transaction %u at %s."),
+									 search_desc, localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									 _("Local row detected by %s is being updated, but it was previously modified by origin \"%s\" in transaction %u at %s."),
+									 search_desc, origin_name, localxmin,
+									 timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row detected by %s is being updated, but it was previously modified by a non-existent origin in transaction %u at %s."),
+									 search_desc, localxmin,
+									 timestamptz_to_str(localts));
+			}
 			else
-				appendStringInfo(&err_detail,
-								 _("Local row %s detected by %s is being updated to the remote row %s, but it was previously modified by a non-existent origin in transaction %u at %s."),
-								 local_desc, search_desc, remote_desc,
-								 localxmin, timestamptz_to_str(localts));
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row is being updated, but it was previously modified locally in transaction %u at %s."),
+									 localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									 _("Local row is being updated, but it was previously modified by origin \"%s\" in transaction %u at %s."),
+									 origin_name, localxmin,
+									 timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row is being updated, but it was previously modified by a non-existent origin in transaction %u at %s."),
+									 localxmin,
+									 timestamptz_to_str(localts));
+			}
 
 			break;
 
 		case CT_UPDATE_DELETED:
-			if (localts)
+			if (remote_desc)
+				appendStringInfo(&err_detail,
+								 _("Remote row %s was applied but previously deleted locally.\n"),
+								 remote_desc);
+
+			if (search_desc && local_desc)
 			{
 				if (localorigin == InvalidRepOriginId)
 					appendStringInfo(&err_detail,
-									 _("Local row %s detected by %s is being updated to the remote row %s, but it was previously deleted locally in transaction %u at %s."),
-									 local_desc, search_desc, remote_desc,
-									 localxmin, timestamptz_to_str(localts));
+									 _("Local row %s detected by %s was previously deleted locally in transaction %u at %s."),
+									 local_desc, search_desc, localxmin,
+									 timestamptz_to_str(localts));
 				else if (replorigin_by_oid(localorigin, true, &origin_name))
 					appendStringInfo(&err_detail,
-									 _("Local row %s detected by %s is being updated to the remote row %s, but it was previously deleted by a different origin \"%s\" in transaction %u at %s."),
-									 local_desc, search_desc, remote_desc,
-									 origin_name, localxmin,
+									_("Local row %s detected by %s was previously deleted by a different origin \"%s\" in transaction %u at %s."),
+									local_desc, search_desc,
+									origin_name, localxmin,
+									timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									_("Local row %s detected by %s was previously deleted by a non-existent origin in transaction %u at %s."),
+									local_desc, search_desc, localxmin,
+									timestamptz_to_str(localts));
+			}
+			else if (!search_desc && local_desc)
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row %s was previously deleted locally in transaction %u at %s."),
+									 local_desc, localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									 _("Local row %s was previously deleted by a different origin \"%s\" in transaction %u at %s."),
+									 local_desc, origin_name, localxmin,
 									 timestamptz_to_str(localts));
 
-			/* The origin that modified this row has been removed. */
-			else
-				appendStringInfo(&err_detail,
-								 _("Local row %s detected by %s is being updated to the remote row %s, but it was previously deleted by a non-existent origin in transaction %u at %s."),
-								 local_desc, search_desc, remote_desc,
-								 localxmin, timestamptz_to_str(localts));
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row %s was previously deleted by a non-existent origin in transaction %u at %s."),
+									 local_desc, localxmin,
+									 timestamptz_to_str(localts));
+			}
+			else if (search_desc && !local_desc)
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row detected by %s was previously deleted locally in transaction %u at %s."),
+									 search_desc, localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									 _("Local row detected by %s was previously deleted by a different origin \"%s\" in transaction %u at %s."),
+									 search_desc, origin_name, localxmin,
+									 timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row detected by %s was previously deleted by a non-existent origin in transaction %u at %s."),
+									 search_desc, localxmin,
+									 timestamptz_to_str(localts));
 			}
 			else
-				appendStringInfo(&err_detail,
-								 _("Local row %s detected by %s is being updated to the remote row %s, but it was previously deleted in transaction %u."),
-								 local_desc, search_desc, remote_desc,
-								 localxmin);
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row was previously deleted locally in transaction %u at %s."),
+									 localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									 _("Local row was previously deleted by a different origin \"%s\" in transaction %u at %s."),
+									 origin_name, localxmin,
+									 timestamptz_to_str(localts));
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row was previously deleted by a non-existent origin in transaction %u at %s."),
+									 localxmin,
+									 timestamptz_to_str(localts));
+			}
 
 			break;
 
 		case CT_UPDATE_MISSING:
-		case CT_DELETE_MISSING:
-			appendStringInfo(&err_detail,
-							 _("Remote row %s could not be found by using %s."),
-							 remote_desc, search_desc);
+			if (search_desc && remote_desc)
+				appendStringInfo(&err_detail,
+								 _("Remote row %s was applied but could not be found local row by using %s"),
+								 remote_desc, search_desc);
+			else if (!search_desc && remote_desc)
+				appendStringInfo(&err_detail,
+								 _("Remote row %s was applied but could not be found local row."),
+								 remote_desc);
+			else if (search_desc && !remote_desc)
+				appendStringInfo(&err_detail,
+								 _("Remote row was applied but could not be found local row by using %s."),
+								 search_desc);
+			else
+				appendStringInfo(&err_detail,
+								 _("Remote row could not be found."));
+			break;
+
+			case CT_DELETE_MISSING:
+			if (remote_desc && search_desc)
+				appendStringInfo(&err_detail,
+								 _("Remote row %s could not be found by using %s."),
+								 remote_desc, search_desc);
+			else if (!remote_desc && search_desc)
+				appendStringInfo(&err_detail,
+								 _("Remote row could not be found by using %s."),
+								 search_desc);
+			else if (remote_desc && !search_desc)
+				appendStringInfo(&err_detail,
+								 _("Remote row %s could not be found."),
+								 remote_desc);
+			else
+				appendStringInfo(&err_detail,
+								 _("Remote row could not be found."));
 			break;
 
 		case CT_DELETE_ORIGIN_DIFFERS:
-			if (localorigin == InvalidRepOriginId)
-				appendStringInfo(&err_detail,
-								 _("Local row %s detected by %s is being deleted, but it was previously modified locally in transaction %u at %s."),
-								 local_desc, search_desc, localxmin,
-								 timestamptz_to_str(localts));
-			else if (replorigin_by_oid(localorigin, true, &origin_name))
-				appendStringInfo(&err_detail,
-								 _("Local row %s detected by %s is being deleted, but it was previously modified by origin \"%s\" in transaction %u at %s."),
-								 local_desc, search_desc, origin_name,
-								 localxmin, timestamptz_to_str(localts));
+			if (search_desc && local_desc)
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row %s detected by %s is being deleted, but it was previously modified locally in transaction %u at %s."),
+									 local_desc, search_desc, localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									_("Local row %s detected by %s is being deleted, but it was previously modified by origin \"%s\" in transaction %u at %s."),
+									local_desc, search_desc, origin_name,
+									localxmin, timestamptz_to_str(localts));
 
-			/* The origin that modified this row has been removed. */
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									_("Local row %s detected by %s is being deleted, but it was previously modified by a non-existent origin in transaction %u at %s."),
+									local_desc, search_desc, localxmin,
+									timestamptz_to_str(localts));
+			}
+			else if (!search_desc && local_desc)
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row %s is being deleted, but it was previously modified locally in transaction %u at %s."),
+									 local_desc, localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									 _("Local row %s is being deleted, but it was previously modified by origin \"%s\" in transaction %u at %s."),
+									 local_desc, origin_name, localxmin,
+									 timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row %s is being deleted, but it was previously modified by a non-existent origin in transaction %u at %s."),
+									 local_desc, localxmin,
+									 timestamptz_to_str(localts));
+			}
+			else if (search_desc && !local_desc)
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row detected by %s is being deleted, but it was previously modified locally in transaction %u at %s."),
+									 search_desc, localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									 _("Local row detected by %s is being deleted, but it was previously modified by origin \"%s\" in transaction %u at %s."),
+									 search_desc, origin_name, localxmin,
+									 timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row detected by %s is being deleted, but it was previously modified by a non-existent origin in transaction %u at %s."),
+									 search_desc, localxmin,
+									 timestamptz_to_str(localts));
+			}
 			else
-				appendStringInfo(&err_detail,
-								 _("Local row %s detected by %s is being deleted, but it was previously modified by a non-existent origin in transaction %u at %s."),
-								 local_desc, search_desc, localxmin,
-								 timestamptz_to_str(localts));
+			{
+				if (localorigin == InvalidRepOriginId)
+					appendStringInfo(&err_detail,
+									 _("Local row is being deleted, but it was previously modified locally in transaction %u at %s."),
+									 localxmin,
+									 timestamptz_to_str(localts));
+				else if (replorigin_by_oid(localorigin, true, &origin_name))
+					appendStringInfo(&err_detail,
+									 _("Local row is being deleted, but it was previously modified by origin \"%s\" in transaction %u at %s."),
+									 origin_name, localxmin,
+									 timestamptz_to_str(localts));
+
+				/* The origin that modified this row has been removed. */
+				else
+					appendStringInfo(&err_detail,
+									 _("Local row is being deleted, but it was previously modified by a non-existent origin in transaction %u at %s."),
+									 localxmin,
+									 timestamptz_to_str(localts));
+			}
 
 			break;
 	}
