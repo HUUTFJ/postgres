@@ -519,22 +519,36 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 
 			break;
 
-			case CT_UPDATE_MISSING:
-			case CT_DELETE_MISSING:
-			if (remote_desc)
-			{
-				if (search_desc)
-					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be found by using %s."),
-									 remote_desc, search_desc);
-				else
-					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be found."),
-									 remote_desc);
-			}
+		case CT_UPDATE_MISSING:
+			if (search_desc && remote_desc)
+				appendStringInfo(&err_detail,
+								 _("Remote row %s could not be found by using %s."),
+								 remote_desc, search_desc);
+			else if (!search_desc && remote_desc)
+				appendStringInfo(&err_detail,
+								 _("Remote row %s could not be found."),
+								 remote_desc);
+			else if (search_desc && !remote_desc)
+				appendStringInfo(&err_detail,
+								 _("Could not find the row to be updated by using %s."),
+								 search_desc);
+			else
+				appendStringInfo(&err_detail,
+								 _("Could not find the row to be updated."));
 
 			break;
 
+		case CT_DELETE_MISSING:
+			if (search_desc)
+				appendStringInfo(&err_detail,
+								 _("Could not find the row to be deleted by using %s."),
+								 search_desc);
+			else
+				appendStringInfo(&err_detail,
+								 _("Could not find the row to be deleted."));
+
+			break;
+		
 		case CT_DELETE_ORIGIN_DIFFERS:
 			if (search_desc && local_desc)
 			{
@@ -628,6 +642,8 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 		pfree(local_desc);
 	if (remote_desc)
 		pfree(remote_desc);
+
+	Assert(err_detail.len > 0);
 
 	/*
 	 * Insert a blank line to visually separate the new detail line from the
