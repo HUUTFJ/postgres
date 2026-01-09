@@ -233,11 +233,11 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 			{
 				if (search_desc)
 					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be applied by using %s."),
+									 _("Remote row %s could not be applied by using %s.\n"),
 									 remote_desc, search_desc);
 				else
 					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be applied."),
+									 _("Remote row %s could not be applied.\n"),
 									 remote_desc);
 			}
 
@@ -466,11 +466,11 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 			{
 				if (search_desc)
 					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be applied by using %s."),
+									 _("Remote row %s could not be found by using %s.\n"),
 									 remote_desc, search_desc);
 				else
 					appendStringInfo(&err_detail,
-									 _("Remote row %s could not be applied."),
+									 _("Remote row %s could not be found.\n"),
 									 remote_desc);
 			}
 
@@ -628,8 +628,6 @@ errdetail_apply_conflict(EState *estate, ResultRelInfo *relinfo,
 		pfree(local_desc);
 	if (remote_desc)
 		pfree(remote_desc);
-
-	Assert(err_detail.len > 0);
 
 	/*
 	 * Insert a blank line to visually separate the new detail line from the
