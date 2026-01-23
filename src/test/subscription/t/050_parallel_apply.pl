@@ -26,6 +26,8 @@ $node_publisher->safe_psql('postgres',
     "CREATE TABLE regress_tab (id int PRIMARY KEY, value text);");
 $node_publisher->safe_psql('postgres',
     "INSERT INTO regress_tab VALUES (generate_series(1, 10), 'test');");
+$node_publisher->safe_psql('postgres',
+    "CREATE TABLE regress_tab_fk (id int PRIMARY KEY, fk int);");
 
 # Create a publication
 $node_publisher->safe_psql('postgres',
@@ -56,6 +58,8 @@ my $publisher_connstr = $node_publisher->connstr . ' dbname=postgres';
 
 $node_subscriber->safe_psql('postgres',
     "CREATE TABLE regress_tab (id int PRIMARY KEY, value text);");
+$node_subscriber->safe_psql('postgres',
+    "CREATE TABLE regress_tab_fk (id int PRIMARY KEY, fk int REFERENCES regress_tab (id));");
 $node_subscriber->safe_psql('postgres',
     "CREATE SUBSCRIPTION regress_sub CONNECTION '$publisher_connstr' PUBLICATION regress_pub;");
 
@@ -236,8 +240,8 @@ $h->query_safe("COMMIT;");
 
 # Ensure subscriber-local indexes are also used for the dependency tracking
 
-# Truncate the data for upcoming tests
-$node_publisher->safe_psql('postgres', "TRUNCATE TABLE regress_tab;");
+# delete the data for upcoming tests
+$node_publisher->safe_psql('postgres', "DELETE FROM regress_tab;");
 $node_publisher->wait_for_catchup('regress_sub');
 
 # Define an unique index on subscriber
@@ -288,7 +292,47 @@ $node_subscriber->wait_for_log(qr/finish waiting for depended xid $xid/, $offset
 
 # Cleanup
 $node_subscriber->safe_psql('postgres', "DROP INDEX regress_tab_value_idx;");
-$node_publisher->safe_psql('postgres', "TRUNCATE TABLE regress_tab;");
+$node_publisher->safe_psql('postgres', "DELETE FROM regress_tab;");
 $node_publisher->wait_for_catchup('regress_sub');
+
+# Ensure subscriber-local indexes are also used for the dependency tracking
+
+# Insert an initial tuple
+$node_publisher->safe_psql('postgres',
+    "INSERT INTO regress_tab VALUES (1, 'initial tuple');");
+$node_publisher->wait_for_catchup('regress_sub');
+
+# Attach an injection_point. Parallel workers would wait before the commit
+$node_subscriber->safe_psql('postgres',
+	"SELECT injection_points_attach('parallel-worker-before-commit','wait');"
+);
+
+# Insert a tuple on publisher. Parallel worker would wait at the injection
+# point
+$node_publisher->safe_psql('postgres',
+    "INSERT INTO regress_tab VALUES (2, 'tmp');");
+
+# Wait until the parallel worker enters the injection point.
+$node_subscriber->wait_for_event('logical replication parallel worker',
+	'parallel-worker-before-commit');
+
+$offset = -s $node_subscriber->logfile;
+
+# Insert tuples on publisher again. This transaction waits for referring tuple
+# is committed.
+$node_publisher->safe_psql('postgres',
+    "INSERT INTO regress_tab_fk VALUES (1, 1);");
+
+# Verify the parallel worker waits for the transaction
+$str = $node_subscriber->wait_for_log(qr/wait for depended xid ([1-9][0-9]+)/, $offset);
+$xid = $str =~ /wait for depended xid ([1-9][0-9]+)/;
+
+# Wakeup the parallel worker
+$node_subscriber->safe_psql('postgres', qq[
+    SELECT injection_points_detach('parallel-worker-before-commit');
+    SELECT injection_points_wakeup('parallel-worker-before-commit');
+]);
+
+$node_subscriber->wait_for_log(qr/finish waiting for depended xid $xid/, $offset);
 
 done_testing();
