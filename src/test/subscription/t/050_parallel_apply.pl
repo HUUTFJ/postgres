@@ -277,4 +277,18 @@ $node_publisher->safe_psql('postgres',
 # Verify the parallel worker waits for the same transaction
 $node_subscriber->wait_for_log(qr/wait for depended xid $xid/, $offset);
 
+# Wakeup the parallel worker
+$node_subscriber->safe_psql('postgres', qq[
+    SELECT injection_points_detach('parallel-worker-before-commit');
+    SELECT injection_points_wakeup('parallel-worker-before-commit');
+]);
+
+# Verify the streamed transaction can be applied
+$node_subscriber->wait_for_log(qr/finish waiting for depended xid $xid/, $offset);
+
+# Cleanup
+$node_subscriber->safe_psql('postgres', "DROP INDEX regress_tab_value_idx;");
+$node_publisher->safe_psql('postgres', "TRUNCATE TABLE regress_tab;");
+$node_publisher->wait_for_catchup('regress_sub');
+
 done_testing();
