@@ -1478,6 +1478,9 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 				check_dependency_on_local_key(relid, &oldtup,
 											  new_depended_xid,
 											  &depends_on_xids);
+				check_dependency_on_foreign_key(relid, &oldtup,
+												new_depended_xid,
+												&depends_on_xids);
 				check_dependency_for_parallel_safety(relid, new_depended_xid,
 													 &depends_on_xids);
 			}
@@ -1503,6 +1506,9 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 			check_dependency_on_local_key(relid, &oldtup,
 										  new_depended_xid,
 										  &depends_on_xids);
+			check_dependency_on_foreign_key(relid, &oldtup,
+											new_depended_xid,
+											&depends_on_xids);
 			check_dependency_for_parallel_safety(relid, new_depended_xid,
 												 &depends_on_xids);
 			break;
