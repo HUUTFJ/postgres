@@ -541,7 +541,10 @@ logicalrep_get_relentry_by_local_oid(Oid localreloid)
 	while ((entry = (LogicalRepRelMapEntry *) hash_seq_search(&status)) != NULL)
 	{
 		if (entry->localreloid == localreloid)
+		{
+			hash_seq_term(&status);
 			return entry;
+		}
 	}
 
 	return NULL;
