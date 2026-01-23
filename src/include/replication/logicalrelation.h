@@ -22,6 +22,13 @@ typedef struct LogicalRepSubscriberIdx
 	Bitmapset  *indexkeys;	/* Bitmap of key columns *on remote* */
 } LogicalRepSubscriberIdx;
 
+typedef struct LogicalRepSubscriberFK
+{
+	Oid			conoid;		/* OID of the FK constraint */
+	LogicalRepRelId ref_remoteid; /* referenced remote relid */
+	Bitmapset  *conkeys;	/* Bitmap of key columns *on remote* */
+} LogicalRepSubscriberFK;
+
 typedef struct LogicalRepRelMapEntry
 {
 	LogicalRepRelation remoterel;	/* key is remoterel.remoteid */
@@ -49,6 +56,10 @@ typedef struct LogicalRepRelMapEntry
 	/* Local unique indexes. Used for dependency tracking */
 	List	   *local_unique_indexes;
 	bool		local_unique_indexes_collected;
+
+	/* Local foreign keys. Used for dependency tracking */
+	List	   *local_fkeys;
+	bool		local_fkeys_collected;
 
 	/*
 	 * Whether the relation can be applied in parallel or not. It is

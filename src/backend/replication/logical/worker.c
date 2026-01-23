@@ -1149,6 +1149,135 @@ check_dependency_on_local_key(Oid relid,
 }
 
 /*
+ * Lookup-only dependency check by key. Does not register/update entries.
+ */
+static void
+check_dependency_lookup_by_key(ReplicaIdentityKey *key,
+							   TransactionId new_depended_xid,
+							   List **depends_on_xids)
+{
+	ReplicaIdentityEntry   *rientry;
+	MemoryContext			oldctx;
+
+	Assert(replica_identity_table);
+
+	oldctx = MemoryContextSwitchTo(ApplyContext);
+
+	rientry = replica_identity_lookup(replica_identity_table, key);
+	free_replica_identity_key(key);
+
+	MemoryContextSwitchTo(oldctx);
+
+	if (!rientry)
+		return;
+
+	/*
+	 * Clean up committed entries while on it.
+	 */
+	if (pa_transaction_committed(rientry->remote_xid))
+	{
+		free_replica_identity_key(rientry->keydata);
+		replica_identity_delete_item(replica_identity_table, rientry);
+		return;
+	}
+
+	*depends_on_xids = check_and_append_xid_dependency(*depends_on_xids,
+													   &rientry->remote_xid,
+													   new_depended_xid);
+}
+
+/*
+ * Check for dependencies on preceding transactions that modify the referenced
+ * unique key of foreign keys.
+ */
+static void
+check_dependency_on_foreign_key(Oid relid,
+								LogicalRepTupleData *original_data,
+								TransactionId new_depended_xid,
+								List **depends_on_xids)
+{
+	LogicalRepRelMapEntry *relentry;
+	LogicalRepTupleData *ridata;
+	ReplicaIdentityKey *rikey;
+	MemoryContext oldctx;
+
+	Assert(depends_on_xids);
+
+	relentry = logicalrep_get_relentry(relid);
+
+	Assert(relentry);
+
+	/*
+	 * We have already checked the local unique indexes and also gathered the
+	 * FK info at that time.
+	 *
+	 * XXX: Should we check and load again?
+	 */
+	Assert(relentry->local_fkeys_collected);
+
+	foreach_ptr(LogicalRepSubscriberFK, fkinfo, relentry->local_fkeys)
+	{
+		int			columns = bms_num_members(fkinfo->conkeys);
+		bool		suitable = true;
+
+		Assert(columns);
+
+		for (int i = 0; i < original_data->ncols; i++)
+		{
+			if (!bms_is_member(i, fkinfo->conkeys))
+				continue;
+
+			/* Skip if the column is NULL or not changed */
+			if (original_data->colstatus[i] == LOGICALREP_COLUMN_NULL ||
+				original_data->colstatus[i] == LOGICALREP_COLUMN_UNCHANGED)
+			{
+				suitable = false;
+				break;
+			}
+		}
+
+		if (!suitable)
+			continue;
+
+		oldctx = MemoryContextSwitchTo(ApplyContext);
+
+		/* Allocate space for replica identity values */
+		ridata = palloc0_object(LogicalRepTupleData);
+		ridata->colvalues = palloc0_array(StringInfoData, columns);
+		ridata->colstatus = palloc0_array(char, columns);
+		ridata->ncols = columns;
+
+		for (int i_original = 0, i_key = 0; i_original < original_data->ncols; i_original++)
+		{
+			StringInfo	original_colvalue;
+
+			if (!bms_is_member(i_original, fkinfo->conkeys))
+				continue;
+
+			original_colvalue = &original_data->colvalues[i_original];
+			initStringInfoExt(&ridata->colvalues[i_key], original_colvalue->len + 1);
+			appendStringInfoString(&ridata->colvalues[i_key], original_colvalue->data);
+
+			ridata->colstatus[i_key] = original_data->colstatus[i_original];
+			i_key++;
+		}
+
+		rikey = palloc0_object(ReplicaIdentityKey);
+		rikey->relid = fkinfo->ref_remoteid;
+		/*
+		 * XXX: use LOGICALREP_KEY_LOCAL_UNIQUE to compare with local unique
+		 * indexes.
+		 */
+		rikey->kind = LOGICALREP_KEY_LOCAL_UNIQUE;
+		rikey->data = ridata;
+
+		MemoryContextSwitchTo(oldctx);
+
+		check_dependency_lookup_by_key(rikey, new_depended_xid, depends_on_xids);
+	}
+}
+
+/*
  * Check for preceding transactions that involve insert, delete, or update
  * operations on the specified table, and return them in 'depends_on_xids'.
  */
@@ -1330,6 +1459,9 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 			check_dependency_on_local_key(relid, &newtup,
 										  new_depended_xid,
 										  &depends_on_xids);
+			check_dependency_on_foreign_key(relid, &newtup,
+											new_depended_xid,
+											&depends_on_xids);
 			check_dependency_for_parallel_safety(relid, new_depended_xid,
 												 &depends_on_xids);
 			break;
@@ -1356,6 +1488,9 @@ handle_dependency_on_change(LogicalRepMsgType action, StringInfo s,
 			check_dependency_on_local_key(relid, &newtup,
 										  new_depended_xid,
 										  &depends_on_xids);
+			check_dependency_on_foreign_key(relid, &newtup,
+											new_depended_xid,
+											&depends_on_xids);
 			check_dependency_for_parallel_safety(relid, new_depended_xid,
 												 &depends_on_xids);
 			break;

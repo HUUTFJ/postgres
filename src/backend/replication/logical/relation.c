@@ -21,6 +21,7 @@
 #include "access/genam.h"
 #include "access/table.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_subscription_rel.h"
 #include "commands/trigger.h"
@@ -143,6 +144,21 @@ free_local_unique_indexes(LogicalRepRelMapEntry *entry)
 }
 
 /*
+ * Release foreign key list
+ */
+static void
+free_local_fkeys(LogicalRepRelMapEntry *entry)
+{
+	Assert(am_leader_apply_worker());
+
+	foreach_ptr(LogicalRepSubscriberFK, fkinfo, entry->local_fkeys)
+		bms_free(fkinfo->conkeys);
+
+	list_free_deep(entry->local_fkeys);
+	entry->local_fkeys = NIL;
+}
+
+/*
  * Free the entry of a relation map cache.
  */
 static void
@@ -172,6 +188,9 @@ logicalrep_relmap_free_entry(LogicalRepRelMapEntry *entry)
 
 	if (entry->local_unique_indexes != NIL)
 		free_local_unique_indexes(entry);
+
+	if (entry->local_fkeys != NIL)
+		free_local_fkeys(entry);
 }
 
 /*
@@ -499,6 +518,168 @@ collect_local_indexes(LogicalRepRelMapEntry *entry)
 }
 
 /*
+ * Search a relmap entry by local relation OID.
+ */
+static LogicalRepRelMapEntry *
+logicalrep_get_relentry_by_local_oid(Oid localreloid)
+{
+	HASH_SEQ_STATUS status;
+	LogicalRepRelMapEntry *entry = NULL;
+
+	if (LogicalRepRelMap == NULL)
+		return NULL;
+
+	/*
+	 * Each entry must be checked individually. Because the key of
+	 * LogicalRepRelMap is the "remote" relid but we only have the local one.
+	 *
+	 * Note: This iteration ignores relations that have not yet been registered
+	 * in LogicalRepRelMap. It is OK because such relations have not been
+	 * modified yet since the subscriber started receiving changes.
+	 */
+	hash_seq_init(&status, LogicalRepRelMap);
+	while ((entry = (LogicalRepRelMapEntry *) hash_seq_search(&status)) != NULL)
+	{
+		if (entry->localreloid == localreloid)
+			return entry;
+	}
+
+	return NULL;
+}
+
+/*
+ * Return true if the FK constraint is always deferred.
+ */
+static bool
+foreign_key_is_always_deferred(Oid conoid)
+{
+	HeapTuple	tup;
+	Form_pg_constraint con;
+	bool		deferred;
+
+	tup = SearchSysCache1(CONSTROID, ObjectIdGetDatum(conoid));
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for foreign key %u", conoid);
+
+	con = (Form_pg_constraint) GETSTRUCT(tup);
+	deferred = con->condeferrable && con->condeferred;
+	ReleaseSysCache(tup);
+
+	return deferred;
+}
+
+/*
+ * Collect all local foreign keys that can be used for dependency tracking.
+ */
+static void
+collect_local_fkeys(LogicalRepRelMapEntry *entry)
+{
+	List	   *fkeys;
+
+	if (entry->local_fkeys != NIL)
+		free_local_fkeys(entry);
+
+	entry->local_fkeys_collected = true;
+
+	/*
+	 * Get the list of foreign keys for the relation.
+	 *
+	 * XXX: Apart from RelationGetIndexList(), the returned list is a part of
+	 * relcache and must be copied before doing anything. See comments atop
+	 * RelationGetFKeyList().
+	 */
+	fkeys = copyObject(RelationGetFKeyList(entry->localrel));
+
+	/* Quick exit if there are no foreign keys */
+	if (fkeys == NIL)
+		return;
+
+	foreach_ptr(ForeignKeyCacheInfo, fk, fkeys)
+	{
+		LogicalRepRelMapEntry *refentry;
+		Bitmapset  *fkkeys = NULL;
+		bool		suitable = true;
+
+		/*
+		 * Skip NOT ENFORCED constraints because they won't be checked at any
+		 * times.
+		 */
+		if (!fk->conenforced)
+			continue;
+
+		/*
+		 * Skip if the foreign key constraint is always deferred. The commit
+		 * ordering is always preserved thus the constraint can be checked in
+		 * correct order.
+		 */
+		if (foreign_key_is_always_deferred(fk->conoid))
+			continue;
+
+		/* Find the referenced relation by the local OID */
+		refentry = logicalrep_get_relentry_by_local_oid(fk->confrelid);
+
+		/*
+		 * Skip if the referenced relation is not the target of this
+		 * subscription.
+		 */
+		if (!refentry)
+			continue;
+
+		/* Seek each attributes and add to a Bitmap */
+		for (int i = 0; i < fk->nkeys; i++)
+		{
+			AttrNumber	localcol = fk->conkey[i];
+			int			remotecol =
+				entry->attrmap->attnums[AttrNumberGetAttrOffset(localcol)];
+
+			/* Skip if the column does not exist on publisher node */
+			if (remotecol < 0)
+			{
+				suitable = false;
+				break;
+			}
+
+			/*
+			 * XXX: What if the FK column is specified with different order?
+			 * E.g., there is a table (a, b) and other table refers like
+			 * REFERENCES (b, a). Will it work correctly?
+			 */
+			fkkeys = bms_add_member(fkkeys, remotecol);
+		}
+
+		/*
+		 * One of the columns does not exist on the publisher side, skip such a
+		 * constraint.
+		 */
+		if (!suitable)
+		{
+			if (fkkeys)
+				bms_free(fkkeys);
+
+			continue;
+		}
+
+		if (fkkeys)
+		{
+			MemoryContext			oldctx;
+			LogicalRepSubscriberFK *fkinfo;
+
+			oldctx = MemoryContextSwitchTo(LogicalRepRelMapContext);
+			fkinfo = palloc(sizeof(LogicalRepSubscriberFK));
+			fkinfo->conoid = fk->conoid;
+			fkinfo->ref_remoteid = refentry->remoterel.remoteid;
+			fkinfo->conkeys = bms_copy(fkkeys);
+
+			bms_free(fkkeys);
+			entry->local_fkeys = lappend(entry->local_fkeys, fkinfo);
+			MemoryContextSwitchTo(oldctx);
+		}
+	}
+
+	list_free_deep(fkeys);
+}
+
+/*
  * Check all local triggers for the relation to see the parallelizability.
  *
  * We regard relations as applicable in parallel if all triggers are immutable.
@@ -714,6 +895,7 @@ logicalrep_rel_load(LogicalRepRelMapEntry *entry, LogicalRepRelId remoteid,
 		{
 			entry->parallel_safe = LOGICALREP_PARALLEL_UNKNOWN;
 			collect_local_indexes(entry);
+			collect_local_fkeys(entry);
 			check_defined_triggers(entry);
 		}
 
