@@ -308,3 +308,33 @@ endif
 if alldocs.length() != 0
   alias_target('alldocs', alldocs)
 endif
+
+# Quick syntax check without style processing
+if xmllint_bin.found()
+  test('check_syntax',
+    xmllint_bin,
+    args: [
+      '--nonet',
+      '--path', meson.current_build_dir(),
+      '--path', meson.current_source_dir(),
+      '--noout',
+      '--valid',
+      'postgres.sgml',
+    ],
+    depends: doc_generated,
+    suite: ['docs'])
+
+  test('check_syntax',
+    xmllint_bin,
+    args: [
+      '--nonet',
+      '--path', meson.current_build_dir(),
+      '--path', meson.current_source_dir(),
+      '--noout',
+      '--valid',
+      'postgres.sgml',
+    ],
+    depends: doc_generated,
+    suite: ['docs'])
+
+endif
