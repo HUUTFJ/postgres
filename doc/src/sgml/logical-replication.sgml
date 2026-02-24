@@ -1791,8 +1791,9 @@ Publications:
 
   <para>
    A <firstterm>sequence synchronization worker</firstterm> will be started
-   after executing any of the above subscriber commands, and will exit once the
-   sequences are synchronized.
+   after executing any of the above subscriber commands. The worker will
+   remain running for the life of the subscription, periodically
+   synchronizing all published sequences.
   </para>
   <para>
    The ability to launch a sequence synchronization worker is limited by the
@@ -1821,7 +1822,7 @@ Publications:
   <sect2 id="sequences-out-of-sync">
    <title>Refreshing Out-of-Sync Sequences</title>
    <para>
-    Subscriber sequence values will become out of sync as the publisher
+    Subscriber sequence values can become out of sync as the publisher
     advances them.
    </para>
    <para>
@@ -2339,15 +2340,13 @@ CONTEXT:  processing remote data for replication origin "pg_16395" during "INSER
 
    <listitem>
     <para>
-     Incremental sequence changes are not replicated.  Although the data in
-     serial or identity columns backed by sequences will be replicated as part
-     of the table, the sequences themselves do not replicate ongoing changes.
-     On the subscriber, a sequence will retain the last value it synchronized
-     from the publisher. If the subscriber is used as a read-only database,
-     then this should typically not be a problem.  If, however, some kind of
-     switchover or failover to the subscriber database is intended, then the
-     sequences would need to be updated to the latest values, either by
-     executing <link linkend="sql-altersubscription-params-refresh-sequences">
+     Incremental sequence changes are continuously replicated. If, however,
+     some kind of switchover or failover to the subscriber database is
+     intended, then the sequences replication could be lagging behind and
+     the sequences on the subscriber should be compared with that of the
+     publisher to make sure that they are up to date, if not they
+     need to be updated to the latest values, either by executing
+     <link linkend="sql-altersubscription-params-refresh-sequences">
      <command>ALTER SUBSCRIPTION ... REFRESH SEQUENCES</command></link>
      or by copying the current data from the publisher (perhaps using
      <command>pg_dump</command>) or by determining a sufficiently high value

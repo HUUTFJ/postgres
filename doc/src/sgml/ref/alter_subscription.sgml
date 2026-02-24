@@ -203,11 +203,6 @@ ALTER SUBSCRIPTION <replaceable class="parameter">name</replaceable> RENAME TO <
           filter <literal>WHERE</literal> clause has since been modified.
          </para>
          <para>
-          Previously subscribed sequences are not re-synchronized. To do that,
-          use <link linkend="sql-altersubscription-params-refresh-sequences">
-          <command>ALTER SUBSCRIPTION ... REFRESH SEQUENCES</command></link>.
-         </para>
-         <para>
           See <xref linkend="sequence-definition-mismatches"/> for recommendations on how
           to handle any warnings about sequence definition differences between
           the publisher and the subscriber, which might occur when

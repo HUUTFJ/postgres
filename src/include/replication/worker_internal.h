@@ -286,7 +286,7 @@ extern void UpdateTwoPhaseState(Oid suboid, char new_state);
 
 extern void ProcessSyncingTablesForSync(XLogRecPtr current_lsn);
 extern void ProcessSyncingTablesForApply(XLogRecPtr current_lsn);
-extern void ProcessSequencesForSync(void);
+extern void MaybeLaunchSequenceSyncWorker(void);
 
 pg_noreturn extern void FinishSyncWorker(void);
 extern void InvalidateSyncingRelStates(Datum arg, SysCacheIdentifier cacheid,

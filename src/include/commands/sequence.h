@@ -47,6 +47,7 @@ extern ObjectAddress AlterSequence(ParseState *pstate, AlterSeqStmt *stmt);
 extern void SequenceChangePersistence(Oid relid, char newrelpersistence);
 extern void DeleteSequenceTuple(Oid relid);
 extern void ResetSequence(Oid seq_relid);
+extern bool GetSequence(Relation seqrel, int64 *last_value, bool *is_called);
 extern void SetSequence(Oid relid, int64 next, bool iscalled);
 extern void ResetSequenceCaches(void);
 

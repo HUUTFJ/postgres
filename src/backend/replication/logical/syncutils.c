@@ -172,7 +172,7 @@ ProcessSyncingRelations(XLogRecPtr current_lsn)
 
 		case WORKERTYPE_APPLY:
 			ProcessSyncingTablesForApply(current_lsn);
-			ProcessSequencesForSync();
+			MaybeLaunchSequenceSyncWorker();
 			break;
 
 		case WORKERTYPE_SEQUENCESYNC:
@@ -191,13 +191,13 @@ ProcessSyncingRelations(XLogRecPtr current_lsn)
  *
  * The pg_subscription_rel catalog is shared by tables and sequences. Changes
  * to either sequences or tables can affect the validity of relation states, so
- * we identify non-READY tables and non-READY sequences together to ensure
+ * we identify non-READY tables and sequences (in any state) together to ensure
  * consistency.
  *
  * has_pending_subtables: true if the subscription has one or more tables that
  * are not in READY state, otherwise false.
  * has_pending_subsequences: true if the subscription has one or more sequences
- * that are not in READY state, otherwise false.
+ * (in any state), otherwise false.
  */
 void
 FetchRelationStates(bool *has_pending_subtables,
@@ -205,23 +205,22 @@ FetchRelationStates(bool *has_pending_subtables,
 					bool *started_tx)
 {
 	/*
-	 * has_subtables and has_subsequences_non_ready are declared as static,
-	 * since the same value can be used until the system table is invalidated.
+	 * has_subtables and has_subsequences are declared as static, since the
+	 * same value can be used until the system table is invalidated.
 	 */
 	static bool has_subtables = false;
-	static bool has_subsequences_non_ready = false;
+	static bool has_subsequences = false;
 
 	*started_tx = false;
-
 	if (relation_states_validity != SYNC_RELATIONS_STATE_VALID)
 	{
 		MemoryContext oldctx;
 		List	   *rstates;
+		List	   *seq_states;
 		SubscriptionRelState *rstate;
 
 		relation_states_validity = SYNC_RELATIONS_STATE_REBUILD_STARTED;
-		has_subsequences_non_ready = false;
-
+		has_subsequences = false;
 		/* Clean the old lists. */
 		list_free_deep(table_states_not_ready);
 		table_states_not_ready = NIL;
@@ -231,26 +230,27 @@ FetchRelationStates(bool *has_pending_subtables,
 			StartTransactionCommand();
 			*started_tx = true;
 		}
-
-		/* Fetch tables and sequences that are in non-READY state. */
-		rstates = GetSubscriptionRelations(MySubscription->oid, true, true,
+		/* Fetch tables that are in non-READY state. */
+		rstates = GetSubscriptionRelations(MySubscription->oid, true, false,
 										   true);
-
+		/* Fetch all sequences (regardless of state). */
+		seq_states = GetSubscriptionRelations(MySubscription->oid, false, true,
+											  false);
 		/* Allocate the tracking info in a permanent memory context. */
 		oldctx = MemoryContextSwitchTo(CacheMemoryContext);
 		foreach_ptr(SubscriptionRelState, subrel, rstates)
 		{
-			if (get_rel_relkind(subrel->relid) == RELKIND_SEQUENCE)
-				has_subsequences_non_ready = true;
-			else
-			{
-				rstate = palloc_object(SubscriptionRelState);
-				memcpy(rstate, subrel, sizeof(SubscriptionRelState));
-				table_states_not_ready = lappend(table_states_not_ready,
-												 rstate);
-			}
+			rstate = palloc_object(SubscriptionRelState);
+			memcpy(rstate, subrel, sizeof(SubscriptionRelState));
+			table_states_not_ready = lappend(table_states_not_ready,
+											 rstate);
 		}
+
+		/* Check if there are any sequences. */
+		has_subsequences = (seq_states != NIL);
 		MemoryContextSwitchTo(oldctx);
+
+		list_free_deep(seq_states);
 
 		/*
 		 * Does the subscription have tables?
@@ -277,5 +277,5 @@ FetchRelationStates(bool *has_pending_subtables,
 		*has_pending_subtables = has_subtables;
 
 	if (has_pending_subsequences)
-		*has_pending_subsequences = has_subsequences_non_ready;
+		*has_pending_subsequences = has_subsequences;
 }

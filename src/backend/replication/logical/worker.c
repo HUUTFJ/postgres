@@ -5100,6 +5100,9 @@ maybe_reread_subscription(void)
 	 * worker won't restart if the streaming option's value is changed from
 	 * 'parallel' to any other value or the server decides not to stream the
 	 * in-progress transaction.
+	 *
+	 * Note: some parameters may not be relevant to the sequence sync worker,
+	 * but exit anyway.
 	 */
 	if (strcmp(newsub->conninfo, MySubscription->conninfo) != 0 ||
 		strcmp(newsub->name, MySubscription->name) != 0 ||
@@ -5114,6 +5117,10 @@ maybe_reread_subscription(void)
 		if (am_parallel_apply_worker())
 			ereport(LOG,
 					(errmsg("logical replication parallel apply worker for subscription \"%s\" will stop because of a parameter change",
+							MySubscription->name)));
+		else if (am_sequencesync_worker())
+			ereport(LOG,
+					(errmsg("logical replication sequence synchronization worker for subscription \"%s\" will stop because of a parameter change",
 							MySubscription->name)));
 		else
 			ereport(LOG,
@@ -5132,6 +5139,10 @@ maybe_reread_subscription(void)
 		if (am_parallel_apply_worker())
 			ereport(LOG,
 					errmsg("logical replication parallel apply worker for subscription \"%s\" will stop because the subscription owner's superuser privileges have been revoked",
+						   MySubscription->name));
+		else if (am_sequencesync_worker())
+			ereport(LOG,
+					errmsg("logical replication sequence synchronization worker for subscription \"%s\" will stop because the subscription owner's superuser privileges have been revoked",
 						   MySubscription->name));
 		else
 			ereport(LOG,

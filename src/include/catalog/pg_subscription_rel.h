@@ -96,6 +96,7 @@ typedef struct LogicalRepSequenceInfo
 	char	   *seqname;
 	char	   *nspname;
 	Oid			localrelid;
+	char		relstate;
 
 	/* Sequence information retrieved from the publisher node */
 	XLogRecPtr	page_lsn;
