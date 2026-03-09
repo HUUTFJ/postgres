@@ -83,6 +83,7 @@
 #include "utils/pg_lsn.h"
 #include "utils/syscache.h"
 #include "utils/usercontext.h"
+#include "utils/wait_event.h"
 
 #define REMOTE_SEQ_COL_COUNT 10
 
