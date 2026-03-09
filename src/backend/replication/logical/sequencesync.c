@@ -103,6 +103,10 @@ typedef enum CopySeqResult
 
 static MemoryContext SequenceSyncContext = NULL;
 
+static List *seqinfos = NIL;
+static bool sequences_info_valid = false;
+static bool system_callbacks_registered = false;
+
 /*
  * Apply worker determines whether a sequence sync worker is needed.
  *
@@ -712,24 +716,48 @@ copy_sequences(WalReceiverConn *conn, List *seqinfos)
 }
 
 /*
- * Identifies sequences that require synchronization and initiates the
- * synchronization process.
+ * Subscription relation syscache invalidation callback.
  *
- * Returns true if sequences have been updated.
+ * Called for invalidations on pg_subscription_rel.
  */
-static bool
-LogicalRepSyncSequences(WalReceiverConn *conn)
+
+static void
+invalidate_sequence_list(Datum arg, SysCacheIdentifier cacheid,
+						 uint32 hashvalue)
+{
+	sequences_info_valid = false;
+}
+
+static void
+build_sequence_sync_cache(void)
 {
 	Relation	rel;
 	HeapTuple	tup;
 	ScanKeyData skey[1];
 	SysScanDesc scan;
 	Oid			subid = MyLogicalRepWorker->subid;
-	bool		sequence_copied = false;
-	List	   *seqinfos = NIL;
 	MemoryContext oldctx;
 
-	Assert(SequenceSyncContext);
+	Assert(!sequences_info_valid);
+
+	/*
+	 * Clean up the existing sequence info list because it's not valid anymore.
+	 */
+	if (seqinfos)
+	{
+		foreach_ptr(LogicalRepSequenceInfo, seqinfo, seqinfos)
+		{
+			if (seqinfo->seqname)
+				pfree(seqinfo->seqname);
+			if (seqinfo->nspname)
+				pfree(seqinfo->nspname);
+
+			seqinfos = foreach_delete_current(seqinfos, seqinfo);
+			pfree(seqinfo);
+		}
+
+		Assert(!seqinfos);
+	}
 
 	StartTransactionCommand();
 
@@ -773,10 +801,9 @@ LogicalRepSyncSequences(WalReceiverConn *conn)
 		Assert(relstate == SUBREL_STATE_INIT || relstate == SUBREL_STATE_READY);
 
 		/*
-		 * Worker needs to process sequences across transaction boundary, so
-		 * allocate them under SequenceSyncContext.
+		 * Cache must have the same lifetime as the sequencesync worker.
 		 */
-		oldctx = MemoryContextSwitchTo(SequenceSyncContext);
+		oldctx = MemoryContextSwitchTo(ApplyContext);
 		seq = palloc0_object(LogicalRepSequenceInfo);
 		seq->localrelid = subrel->srrelid;
 		seq->nspname = get_namespace_name(RelationGetNamespace(sequence_rel));
@@ -793,6 +820,38 @@ LogicalRepSyncSequences(WalReceiverConn *conn)
 	table_close(rel, AccessShareLock);
 
 	CommitTransactionCommand();
+
+	sequences_info_valid = true;
+
+	/*
+	 * Register a syscache callback to watch for changes to pg_subscription_rel
+	 * so that we can invalidate the sequence info cache when necessary.
+	 */
+	if (!system_callbacks_registered)
+	{
+		CacheRegisterSyscacheCallback(SUBSCRIPTIONRELMAP,
+									  invalidate_sequence_list,
+									  (Datum) 0);
+		system_callbacks_registered = true;
+	}
+}
+
+/*
+ * Identifies sequences that require synchronization and initiates the
+ * synchronization process.
+ *
+ * Returns true if sequences have been updated.
+ */
+static bool
+LogicalRepSyncSequences(WalReceiverConn *conn)
+{
+	bool		sequence_copied = false;
+
+	Assert(SequenceSyncContext);
+
+	/* Build the cache if there is no valid sequence list */
+	if (!sequences_info_valid)
+		build_sequence_sync_cache();
 
 	/*
 	 * Exit early if no catalog entries found, likely due to concurrent drops.
