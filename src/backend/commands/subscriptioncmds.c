@@ -30,6 +30,7 @@
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_subscription.h"
+#include "catalog/pg_subscription_db.h"
 #include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_user_mapping.h"
@@ -669,11 +670,14 @@ ObjectAddress
 CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 				   bool isTopLevel)
 {
-	Relation	rel;
+	Relation	subrel;
+	Relation	subdbrel;
 	ObjectAddress myself;
 	Oid			subid;
-	bool		nulls[Natts_pg_subscription];
-	Datum		values[Natts_pg_subscription];
+	bool		subnulls[Natts_pg_subscription];
+	Datum		subvalues[Natts_pg_subscription];
+	bool		subdbnulls[Natts_pg_subscription_db];
+	Datum		subdbvalues[Natts_pg_subscription_db];
 	Oid			owner = GetUserId();
 	HeapTuple	tup;
 	Oid			serverid;
@@ -753,7 +757,8 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 		elog(WARNING, "subscriptions created by regression test cases should have names starting with \"regress_\"");
 #endif
 
-	rel = table_open(SubscriptionRelationId, RowExclusiveLock);
+	subrel = table_open(SubscriptionRelationId, RowExclusiveLock);
+	subdbrel = table_open(SubscriptionDbRelationId, RowExclusiveLock);
 
 	/* Check if name is used */
 	subid = GetSysCacheOid2(SUBSCRIPTIONNAME, Anum_pg_subscription_oid,
@@ -824,74 +829,81 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 
 	publications = stmt->publication;
 
-	/* Everything ok, form a new tuple. */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
+	/* Everything ok, form and insert the shared catalog tuple */
+	memset(subvalues, 0, sizeof(subvalues));
+	memset(subnulls, false, sizeof(subnulls));
 
-	subid = GetNewOidWithIndex(rel, SubscriptionObjectIndexId,
+	subid = GetNewOidWithIndex(subrel, SubscriptionObjectIndexId,
 							   Anum_pg_subscription_oid);
-	values[Anum_pg_subscription_oid - 1] = ObjectIdGetDatum(subid);
-	values[Anum_pg_subscription_subdbid - 1] = ObjectIdGetDatum(MyDatabaseId);
-	values[Anum_pg_subscription_subskiplsn - 1] = LSNGetDatum(InvalidXLogRecPtr);
-	values[Anum_pg_subscription_subname - 1] =
+	subvalues[Anum_pg_subscription_oid - 1] = ObjectIdGetDatum(subid);
+	subvalues[Anum_pg_subscription_subdbid - 1] = ObjectIdGetDatum(MyDatabaseId);
+	subvalues[Anum_pg_subscription_subname - 1] =
 		DirectFunctionCall1(namein, CStringGetDatum(stmt->subname));
-	values[Anum_pg_subscription_subowner - 1] = ObjectIdGetDatum(owner);
-	values[Anum_pg_subscription_subenabled - 1] = BoolGetDatum(opts.enabled);
-	values[Anum_pg_subscription_subbinary - 1] = BoolGetDatum(opts.binary);
-	values[Anum_pg_subscription_substream - 1] = CharGetDatum(opts.streaming);
-	values[Anum_pg_subscription_subtwophasestate - 1] =
+	subvalues[Anum_pg_subscription_subowner - 1] = ObjectIdGetDatum(owner);
+	subvalues[Anum_pg_subscription_subenabled - 1] = BoolGetDatum(opts.enabled);
+	subvalues[Anum_pg_subscription_subretaindeadtuples - 1] =
+		BoolGetDatum(opts.retaindeadtuples);
+	subvalues[Anum_pg_subscription_subretentionactive - 1] =
+		BoolGetDatum(opts.retaindeadtuples);
+
+	tup = heap_form_tuple(RelationGetDescr(subrel),
+						  subvalues, subnulls);
+	CatalogTupleInsert(subrel, tup);
+	heap_freetuple(tup);
+
+	/* Form the per-database catalog tuple */
+	memset(subdbvalues, 0, sizeof(subdbvalues));
+	memset(subdbnulls, false, sizeof(subdbnulls));
+
+	subdbvalues[Anum_pg_subscription_db_oid - 1] = ObjectIdGetDatum(subid);
+	subdbvalues[Anum_pg_subscription_db_subskiplsn - 1] = LSNGetDatum(InvalidXLogRecPtr);
+	subdbvalues[Anum_pg_subscription_db_subbinary - 1] = BoolGetDatum(opts.binary);
+	subdbvalues[Anum_pg_subscription_db_substream - 1] = CharGetDatum(opts.streaming);
+	subdbvalues[Anum_pg_subscription_db_subtwophasestate - 1] =
 		CharGetDatum(opts.twophase ?
 					 LOGICALREP_TWOPHASE_STATE_PENDING :
 					 LOGICALREP_TWOPHASE_STATE_DISABLED);
-	values[Anum_pg_subscription_subdisableonerr - 1] = BoolGetDatum(opts.disableonerr);
-	values[Anum_pg_subscription_subpasswordrequired - 1] = BoolGetDatum(opts.passwordrequired);
-	values[Anum_pg_subscription_subrunasowner - 1] = BoolGetDatum(opts.runasowner);
-	values[Anum_pg_subscription_subfailover - 1] = BoolGetDatum(opts.failover);
-	values[Anum_pg_subscription_subretaindeadtuples - 1] =
-		BoolGetDatum(opts.retaindeadtuples);
-	values[Anum_pg_subscription_submaxretention - 1] =
-		Int32GetDatum(opts.maxretention);
-	values[Anum_pg_subscription_subretentionactive - 1] =
-		BoolGetDatum(opts.retaindeadtuples);
-	values[Anum_pg_subscription_subserver - 1] = ObjectIdGetDatum(serverid);
+	subdbvalues[Anum_pg_subscription_db_subdisableonerr - 1] = BoolGetDatum(opts.disableonerr);
+	subdbvalues[Anum_pg_subscription_db_subpasswordrequired - 1] = BoolGetDatum(opts.passwordrequired);
+	subdbvalues[Anum_pg_subscription_db_subrunasowner - 1] = BoolGetDatum(opts.runasowner);
+	subdbvalues[Anum_pg_subscription_db_subfailover - 1] = BoolGetDatum(opts.failover);
+	subdbvalues[Anum_pg_subscription_db_submaxretention - 1] = Int32GetDatum(opts.maxretention);
+	subdbvalues[Anum_pg_subscription_db_subserver - 1] = ObjectIdGetDatum(serverid);
 	if (!OidIsValid(serverid))
-		values[Anum_pg_subscription_subconninfo - 1] =
+		subdbvalues[Anum_pg_subscription_db_subconninfo - 1] =
 			CStringGetTextDatum(conninfo);
 	else
-		nulls[Anum_pg_subscription_subconninfo - 1] = true;
+		subdbnulls[Anum_pg_subscription_db_subconninfo - 1] = true;
 	if (opts.slot_name)
-		values[Anum_pg_subscription_subslotname - 1] =
+		subdbvalues[Anum_pg_subscription_db_subslotname - 1] =
 			DirectFunctionCall1(namein, CStringGetDatum(opts.slot_name));
 	else
-		nulls[Anum_pg_subscription_subslotname - 1] = true;
-	values[Anum_pg_subscription_subsynccommit - 1] =
-		CStringGetTextDatum(opts.synchronous_commit);
-	values[Anum_pg_subscription_subwalrcvtimeout - 1] =
+		subdbnulls[Anum_pg_subscription_db_subslotname - 1] = true;
+	subdbvalues[Anum_pg_subscription_db_subsynccommit - 1] = CStringGetTextDatum(opts.synchronous_commit);
+	subdbvalues[Anum_pg_subscription_db_subwalrcvtimeout - 1] =
 		CStringGetTextDatum(opts.wal_receiver_timeout);
-	values[Anum_pg_subscription_subpublications - 1] =
-		publicationListToArray(publications);
-	values[Anum_pg_subscription_suborigin - 1] =
-		CStringGetTextDatum(opts.origin);
+	subdbvalues[Anum_pg_subscription_db_subpublications - 1] = publicationListToArray(publications);
+	subdbvalues[Anum_pg_subscription_db_suborigin - 1] = CStringGetTextDatum(opts.origin);
 
-	values[Anum_pg_subscription_subconflictlogdest - 1] =
+	subdbvalues[Anum_pg_subscription_db_subconflictlogdest - 1] =
 		CStringGetTextDatum(ConflictLogDestNames[opts.conflictlogdest]);
 
 	/*
 	 * We create the conflict log table here, if required, so that its
-	 * relation OID can be stored when inserting the pg_subscription tuple
+	 * relation OID can be stored when inserting the pg_subscription_db tuple
 	 * below.
 	 */
 	if (CONFLICTS_LOGGED_TO_TABLE(opts.conflictlogdest))
 		logrelid = create_conflict_log_table(subid, stmt->subname, owner);
 
 	/* Store table OID in the catalog. */
-	values[Anum_pg_subscription_subconflictlogrelid - 1] =
+	subdbvalues[Anum_pg_subscription_db_subconflictlogrelid - 1] =
 		ObjectIdGetDatum(logrelid);
 
-	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
+	tup = heap_form_tuple(RelationGetDescr(subdbrel), subdbvalues, subdbnulls);
 
 	/* Insert tuple into catalog. */
-	CatalogTupleInsert(rel, tup);
+	CatalogTupleInsert(subdbrel, tup);
 	heap_freetuple(tup);
 
 	recordDependencyOnOwner(SubscriptionRelationId, subid, owner);
@@ -1063,7 +1075,8 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 				(errmsg("subscription was created, but is not connected"),
 				 errhint("To initiate replication, you must manually create the replication slot, enable the subscription, and alter the subscription to refresh publications.")));
 
-	table_close(rel, RowExclusiveLock);
+	table_close(subrel, RowExclusiveLock);
+	table_close(subdbrel, RowExclusiveLock);
 
 	pgstat_create_subscription(subid);
 
@@ -1568,15 +1581,21 @@ ObjectAddress
 AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				  bool isTopLevel)
 {
-	Relation	rel;
+	Relation	subrel;
+	Relation	subdbrel;
 	ObjectAddress myself;
-	bool		nulls[Natts_pg_subscription];
-	bool		replaces[Natts_pg_subscription];
-	Datum		values[Natts_pg_subscription];
-	HeapTuple	tup;
+	bool		subnulls[Natts_pg_subscription];
+	bool		subreplaces[Natts_pg_subscription];
+	Datum		subvalues[Natts_pg_subscription];
+	bool		subdbnulls[Natts_pg_subscription_db];
+	bool		subdbreplaces[Natts_pg_subscription_db];
+	Datum		subdbvalues[Natts_pg_subscription_db];
+	HeapTuple	subtup;
+	HeapTuple	subdbtup;
 	Oid			subid;
 	bool		orig_conninfo_needed = true;
-	bool		update_tuple = false;
+	bool		update_subtuple = false;
+	bool		update_subdbtuple = false;
 	bool		update_failover = false;
 	bool		update_two_phase = false;
 	bool		check_pub_rdt = false;
@@ -1586,24 +1605,25 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 	char	   *new_conninfo = NULL;
 	char	   *origin;
 	Subscription *sub;
-	Form_pg_subscription form;
+	Form_pg_subscription subform;
+	Form_pg_subscription_db subdbform;
 	uint32		supported_opts;
 	SubOpts		opts = {0};
 
-	rel = table_open(SubscriptionRelationId, RowExclusiveLock);
+	subrel = table_open(SubscriptionRelationId, RowExclusiveLock);
 
-	/* Fetch the existing tuple. */
-	tup = SearchSysCacheCopy2(SUBSCRIPTIONNAME, ObjectIdGetDatum(MyDatabaseId),
+	/* Fetch the existing shared catalog tuple */
+	subtup = SearchSysCacheCopy2(SUBSCRIPTIONNAME, ObjectIdGetDatum(MyDatabaseId),
 							  CStringGetDatum(stmt->subname));
 
-	if (!HeapTupleIsValid(tup))
+	if (!HeapTupleIsValid(subtup))
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("subscription \"%s\" does not exist",
 						stmt->subname)));
 
-	form = (Form_pg_subscription) GETSTRUCT(tup);
-	subid = form->oid;
+	subform = (Form_pg_subscription) GETSTRUCT(subtup);
+	subid = subform->oid;
 
 	/* must be owner */
 	if (!object_ownercheck(SubscriptionRelationId, subid, GetUserId()))
@@ -1686,6 +1706,17 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 			orig_conninfo_needed = false;
 	}
 
+	subdbrel = table_open(SubscriptionDbRelationId, RowExclusiveLock);
+
+	/* Fetch the corresponding per-database catalog tuple */
+	subdbtup = SearchSysCacheCopy1(SUBSCRIPTIONDBOID,
+								ObjectIdGetDatum(subid));
+	if (!HeapTupleIsValid(subdbtup))
+		elog(ERROR, "cache lookup failed for subscription database data %u",
+			subid);
+
+	subdbform = (Form_pg_subscription_db) GETSTRUCT(subdbtup);
+
 	/*
 	 * Skip ACL checks on the subscription's foreign server, if any. If
 	 * changing the server (or replacing it with a raw connection), then the
@@ -1713,10 +1744,13 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 	/* Lock the subscription so nobody else can do anything with it. */
 	LockSharedObject(SubscriptionRelationId, subid, 0, AccessExclusiveLock);
 
-	/* Form a new tuple. */
-	memset(values, 0, sizeof(values));
-	memset(nulls, false, sizeof(nulls));
-	memset(replaces, false, sizeof(replaces));
+	/* Prepare replacement values for both catalog tuples. */
+	memset(subvalues, 0, sizeof(subvalues));
+	memset(subnulls, false, sizeof(subnulls));
+	memset(subreplaces, false, sizeof(subreplaces));
+	memset(subdbvalues, 0, sizeof(subdbvalues));
+	memset(subdbnulls, false, sizeof(subdbnulls));
+	memset(subdbreplaces, false, sizeof(subdbreplaces));
 
 	ObjectAddressSet(myself, SubscriptionRelationId, subid);
 
@@ -1740,40 +1774,50 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 										"slot_name = NONE")));
 
 					if (opts.slot_name)
-						values[Anum_pg_subscription_subslotname - 1] =
+						subdbvalues[Anum_pg_subscription_db_subslotname - 1] =
 							DirectFunctionCall1(namein, CStringGetDatum(opts.slot_name));
 					else
-						nulls[Anum_pg_subscription_subslotname - 1] = true;
-					replaces[Anum_pg_subscription_subslotname - 1] = true;
+						subdbnulls[Anum_pg_subscription_db_subslotname - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_subslotname - 1] = true;
+
+					update_subdbtuple = true;
 				}
 
 				if (opts.synchronous_commit)
 				{
-					values[Anum_pg_subscription_subsynccommit - 1] =
+					subdbvalues[Anum_pg_subscription_db_subsynccommit - 1] =
 						CStringGetTextDatum(opts.synchronous_commit);
-					replaces[Anum_pg_subscription_subsynccommit - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_subsynccommit - 1] = true;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_BINARY))
 				{
-					values[Anum_pg_subscription_subbinary - 1] =
+					subdbvalues[Anum_pg_subscription_db_subbinary - 1] =
 						BoolGetDatum(opts.binary);
-					replaces[Anum_pg_subscription_subbinary - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_subbinary - 1] = true;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_STREAMING))
 				{
-					values[Anum_pg_subscription_substream - 1] =
+					subdbvalues[Anum_pg_subscription_db_substream - 1] =
 						CharGetDatum(opts.streaming);
-					replaces[Anum_pg_subscription_substream - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_substream - 1] = true;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_DISABLE_ON_ERR))
 				{
-					values[Anum_pg_subscription_subdisableonerr - 1]
+					subdbvalues[Anum_pg_subscription_db_subdisableonerr - 1]
 						= BoolGetDatum(opts.disableonerr);
-					replaces[Anum_pg_subscription_subdisableonerr - 1]
+					subdbreplaces[Anum_pg_subscription_db_subdisableonerr - 1]
 						= true;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_PASSWORD_REQUIRED))
@@ -1785,17 +1829,21 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 								 errmsg("password_required=false is superuser-only"),
 								 errhint("Subscriptions with the password_required option set to false may only be created or modified by the superuser.")));
 
-					values[Anum_pg_subscription_subpasswordrequired - 1]
+					subdbvalues[Anum_pg_subscription_db_subpasswordrequired - 1]
 						= BoolGetDatum(opts.passwordrequired);
-					replaces[Anum_pg_subscription_subpasswordrequired - 1]
+					subdbreplaces[Anum_pg_subscription_db_subpasswordrequired - 1]
 						= true;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_RUN_AS_OWNER))
 				{
-					values[Anum_pg_subscription_subrunasowner - 1] =
+					subdbvalues[Anum_pg_subscription_db_subrunasowner - 1] =
 						BoolGetDatum(opts.runasowner);
-					replaces[Anum_pg_subscription_subrunasowner - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_subrunasowner - 1] = true;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_TWOPHASE_COMMIT))
@@ -1855,11 +1903,13 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 								 errhint("Resolve these transactions and try again.")));
 
 					/* Change system catalog accordingly */
-					values[Anum_pg_subscription_subtwophasestate - 1] =
+					subdbvalues[Anum_pg_subscription_db_subtwophasestate - 1] =
 						CharGetDatum(opts.twophase ?
 									 LOGICALREP_TWOPHASE_STATE_PENDING :
 									 LOGICALREP_TWOPHASE_STATE_DISABLED);
-					replaces[Anum_pg_subscription_subtwophasestate - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_subtwophasestate - 1] = true;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_FAILOVER))
@@ -1874,16 +1924,18 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					CheckAlterSubOption(sub, "failover", update_failover,
 										isTopLevel);
 
-					values[Anum_pg_subscription_subfailover - 1] =
+					subdbvalues[Anum_pg_subscription_db_subfailover - 1] =
 						BoolGetDatum(opts.failover);
-					replaces[Anum_pg_subscription_subfailover - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_subfailover - 1] = true;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_RETAIN_DEAD_TUPLES))
 				{
-					values[Anum_pg_subscription_subretaindeadtuples - 1] =
+					subvalues[Anum_pg_subscription_subretaindeadtuples - 1] =
 						BoolGetDatum(opts.retaindeadtuples);
-					replaces[Anum_pg_subscription_subretaindeadtuples - 1] = true;
+					subreplaces[Anum_pg_subscription_subretaindeadtuples - 1] = true;
 
 					/*
 					 * Update the retention status only if there's a change in
@@ -1901,9 +1953,9 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					 */
 					if (opts.retaindeadtuples != sub->retaindeadtuples)
 					{
-						values[Anum_pg_subscription_subretentionactive - 1] =
+						subvalues[Anum_pg_subscription_subretentionactive - 1] =
 							BoolGetDatum(opts.retaindeadtuples);
-						replaces[Anum_pg_subscription_subretentionactive - 1] = true;
+						subreplaces[Anum_pg_subscription_subretentionactive - 1] = true;
 
 						retention_active = opts.retaindeadtuples;
 					}
@@ -1934,15 +1986,19 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 					check_pub_rdt = opts.retaindeadtuples;
 					retain_dead_tuples = opts.retaindeadtuples;
+
+					update_subtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_MAX_RETENTION_DURATION))
 				{
-					values[Anum_pg_subscription_submaxretention - 1] =
+					subdbvalues[Anum_pg_subscription_db_submaxretention - 1] =
 						Int32GetDatum(opts.maxretention);
-					replaces[Anum_pg_subscription_submaxretention - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_submaxretention - 1] = true;
 
 					max_retention = opts.maxretention;
+
+					update_subdbtuple = true;
 				}
 
 				/*
@@ -1959,9 +2015,9 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 				if (IsSet(opts.specified_opts, SUBOPT_ORIGIN))
 				{
-					values[Anum_pg_subscription_suborigin - 1] =
+					subdbvalues[Anum_pg_subscription_db_suborigin - 1] =
 						CStringGetTextDatum(opts.origin);
-					replaces[Anum_pg_subscription_suborigin - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_suborigin - 1] = true;
 
 					/*
 					 * Check if changes from different origins may be received
@@ -1974,13 +2030,17 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 						pg_strcasecmp(opts.origin, LOGICALREP_ORIGIN_ANY) == 0;
 
 					origin = opts.origin;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_WAL_RECEIVER_TIMEOUT))
 				{
-					values[Anum_pg_subscription_subwalrcvtimeout - 1] =
+					subdbvalues[Anum_pg_subscription_db_subwalrcvtimeout - 1] =
 						CStringGetTextDatum(opts.wal_receiver_timeout);
-					replaces[Anum_pg_subscription_subwalrcvtimeout - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_subwalrcvtimeout - 1] = true;
+
+					update_subdbtuple = true;
 				}
 
 				if (IsSet(opts.specified_opts, SUBOPT_CONFLICT_LOG_DEST))
@@ -1993,9 +2053,9 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 						bool		update_relid;
 						Oid			relid = InvalidOid;
 
-						values[Anum_pg_subscription_subconflictlogdest - 1] =
+						subdbvalues[Anum_pg_subscription_db_subconflictlogdest - 1] =
 							CStringGetTextDatum(ConflictLogDestNames[opts.conflictlogdest]);
-						replaces[Anum_pg_subscription_subconflictlogdest - 1] = true;
+						subdbreplaces[Anum_pg_subscription_db_subconflictlogdest - 1] = true;
 
 						update_relid = alter_sub_conflict_log_dest(sub,
 																   old_dest,
@@ -2003,15 +2063,16 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 																   &relid);
 						if (update_relid)
 						{
-							values[Anum_pg_subscription_subconflictlogrelid - 1] =
+							subdbvalues[Anum_pg_subscription_db_subconflictlogrelid - 1] =
 								ObjectIdGetDatum(relid);
-							replaces[Anum_pg_subscription_subconflictlogrelid - 1] =
+							subdbreplaces[Anum_pg_subscription_db_subconflictlogrelid - 1] =
 								true;
 						}
+
+						update_subdbtuple = true;
 					}
 				}
 
-				update_tuple = true;
 				break;
 			}
 
@@ -2033,14 +2094,14 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 										   WARNING, sub->retaindeadtuples,
 										   sub->retentionactive, false);
 
-				values[Anum_pg_subscription_subenabled - 1] =
+				subvalues[Anum_pg_subscription_subenabled - 1] =
 					BoolGetDatum(opts.enabled);
-				replaces[Anum_pg_subscription_subenabled - 1] = true;
+				subreplaces[Anum_pg_subscription_subenabled - 1] = true;
 
 				if (opts.enabled)
 					ApplyLauncherWakeupAtCommit();
 
-				update_tuple = true;
+				update_subtuple = true;
 
 				/*
 				 * The subscription might be initially created with
@@ -2062,16 +2123,16 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				 * Remove what was there before, either another foreign server
 				 * or a connection string.
 				 */
-				if (form->subserver)
+				if (subdbform->subserver)
 				{
-					deleteDependencyRecordsForSpecific(SubscriptionRelationId, form->oid,
+					deleteDependencyRecordsForSpecific(SubscriptionRelationId, subform->oid,
 													   DEPENDENCY_NORMAL,
-													   ForeignServerRelationId, form->subserver);
+													   ForeignServerRelationId, subdbform->subserver);
 				}
 				else
 				{
-					nulls[Anum_pg_subscription_subconninfo - 1] = true;
-					replaces[Anum_pg_subscription_subconninfo - 1] = true;
+					subdbnulls[Anum_pg_subscription_db_subconninfo - 1] = true;
+					subdbreplaces[Anum_pg_subscription_db_subconninfo - 1] = true;
 				}
 
 				/*
@@ -2081,18 +2142,18 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				new_server = GetForeignServerByName(stmt->servername, false);
 				aclresult = object_aclcheck(ForeignServerRelationId,
 											new_server->serverid,
-											form->subowner, ACL_USAGE);
+											subform->subowner, ACL_USAGE);
 				if (aclresult != ACLCHECK_OK)
 					ereport(ERROR,
 							errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 							errmsg("subscription owner \"%s\" does not have permission on foreign server \"%s\"",
-								   GetUserNameFromId(form->subowner, false),
+								   GetUserNameFromId(subform->subowner, false),
 								   new_server->servername));
 
 				/* make sure a user mapping exists */
-				GetUserMapping(form->subowner, new_server->serverid);
+				GetUserMapping(subform->subowner, new_server->serverid);
 
-				new_conninfo = ForeignServerConnectionString(form->subowner,
+				new_conninfo = ForeignServerConnectionString(subform->subowner,
 															 new_server);
 
 				/* Load the library providing us libpq calls. */
@@ -2101,13 +2162,13 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				walrcv_check_conninfo(new_conninfo,
 									  sub->passwordrequired && !sub->ownersuperuser);
 
-				values[Anum_pg_subscription_subserver - 1] = ObjectIdGetDatum(new_server->serverid);
-				replaces[Anum_pg_subscription_subserver - 1] = true;
+				subdbvalues[Anum_pg_subscription_db_subserver - 1] = ObjectIdGetDatum(new_server->serverid);
+				subdbreplaces[Anum_pg_subscription_db_subserver - 1] = true;
 
 				ObjectAddressSet(referenced, ForeignServerRelationId, new_server->serverid);
 				recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 
-				update_tuple = true;
+				update_subdbtuple = true;
 			}
 
 			/*
@@ -2120,14 +2181,14 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 		case ALTER_SUBSCRIPTION_CONNECTION:
 			/* remove reference to foreign server and dependencies, if present */
-			if (form->subserver)
+			if (subdbform->subserver)
 			{
-				deleteDependencyRecordsForSpecific(SubscriptionRelationId, form->oid,
+				deleteDependencyRecordsForSpecific(SubscriptionRelationId, subform->oid,
 												   DEPENDENCY_NORMAL,
-												   ForeignServerRelationId, form->subserver);
+												   ForeignServerRelationId, subdbform->subserver);
 
-				values[Anum_pg_subscription_subserver - 1] = ObjectIdGetDatum(InvalidOid);
-				replaces[Anum_pg_subscription_subserver - 1] = true;
+				subdbvalues[Anum_pg_subscription_db_subserver - 1] = ObjectIdGetDatum(InvalidOid);
+				subdbreplaces[Anum_pg_subscription_db_subserver - 1] = true;
 			}
 
 			new_conninfo = stmt->conninfo;
@@ -2138,10 +2199,10 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 			walrcv_check_conninfo(new_conninfo,
 								  sub->passwordrequired && !sub->ownersuperuser);
 
-			values[Anum_pg_subscription_subconninfo - 1] =
+			subdbvalues[Anum_pg_subscription_db_subconninfo - 1] =
 				CStringGetTextDatum(stmt->conninfo);
-			replaces[Anum_pg_subscription_subconninfo - 1] = true;
-			update_tuple = true;
+			subdbreplaces[Anum_pg_subscription_db_subconninfo - 1] = true;
+			update_subdbtuple = true;
 
 			/*
 			 * Since the remote server configuration might have changed,
@@ -2153,11 +2214,11 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 		case ALTER_SUBSCRIPTION_SET_PUBLICATION:
 			{
-				values[Anum_pg_subscription_subpublications - 1] =
+				subdbvalues[Anum_pg_subscription_db_subpublications - 1] =
 					publicationListToArray(stmt->publication);
-				replaces[Anum_pg_subscription_subpublications - 1] = true;
+				subdbreplaces[Anum_pg_subscription_db_subpublications - 1] = true;
 
-				update_tuple = true;
+				update_subdbtuple = true;
 
 				/* Refresh if user asked us to. */
 				if (opts.refresh)
@@ -2197,11 +2258,11 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				bool		isadd = stmt->kind == ALTER_SUBSCRIPTION_ADD_PUBLICATION;
 
 				publist = merge_publications(sub->publications, stmt->publication, isadd, stmt->subname);
-				values[Anum_pg_subscription_subpublications - 1] =
+				subdbvalues[Anum_pg_subscription_db_subpublications - 1] =
 					publicationListToArray(publist);
-				replaces[Anum_pg_subscription_subpublications - 1] = true;
+				subdbreplaces[Anum_pg_subscription_db_subpublications - 1] = true;
 
-				update_tuple = true;
+				update_subdbtuple = true;
 
 				/* Refresh if user asked us to. */
 				if (opts.refresh)
@@ -2325,10 +2386,10 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 										LSN_FORMAT_ARGS(remote_lsn))));
 				}
 
-				values[Anum_pg_subscription_subskiplsn - 1] = LSNGetDatum(opts.lsn);
-				replaces[Anum_pg_subscription_subskiplsn - 1] = true;
+				subdbvalues[Anum_pg_subscription_db_subskiplsn - 1] = LSNGetDatum(opts.lsn);
+				subdbreplaces[Anum_pg_subscription_db_subskiplsn - 1] = true;
 
-				update_tuple = true;
+				update_subdbtuple = true;
 				break;
 			}
 
@@ -2337,17 +2398,26 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				 stmt->kind);
 	}
 
-	/* Update the catalog if needed. */
-	if (update_tuple)
+	/* Update catalogs if needed. */
+	if (update_subtuple)
 	{
-		tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
-								replaces);
+		subtup = heap_modify_tuple(subtup, RelationGetDescr(subrel), subvalues,
+								   subnulls, subreplaces);
 
-		CatalogTupleUpdate(rel, &tup->t_self, tup);
+		CatalogTupleUpdate(subrel, &subtup->t_self, subtup);
 
-		heap_freetuple(tup);
+		heap_freetuple(subtup);
 	}
 
+	if (update_subdbtuple)
+	{
+		subdbtup = heap_modify_tuple(subdbtup, RelationGetDescr(subdbrel),
+									 subdbvalues, subdbnulls, subdbreplaces);
+
+		CatalogTupleUpdate(subdbrel, &subdbtup->t_self, subdbtup);
+
+		heap_freetuple(subdbtup);
+	}
 	/*
 	 * Try to acquire the connection necessary either for modifying the slot
 	 * or for checking if the remote server permits enabling
@@ -2403,7 +2473,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 		PG_END_TRY();
 	}
 
-	table_close(rel, RowExclusiveLock);
+	table_close(subrel, RowExclusiveLock);
+	table_close(subdbrel, RowExclusiveLock);
 
 	InvokeObjectPostAlterHook(SubscriptionRelationId, subid, 0);
 
@@ -2501,9 +2572,11 @@ drop_sub_conflict_log_table(Oid subid, char *subname, Oid subconflictlogrelid)
 void
 DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 {
-	Relation	rel;
+	Relation	subrel;
+	Relation	subdbrel;
 	ObjectAddress myself;
-	HeapTuple	tup;
+	HeapTuple	subtup;
+	HeapTuple	subdbtup;
 	Oid			subid;
 	Oid			subowner;
 	Oid			subserver;
@@ -2519,7 +2592,8 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 	char		originname[NAMEDATALEN];
 	char	   *err = NULL;
 	WalReceiverConn *wrconn = NULL;
-	Form_pg_subscription form;
+	Form_pg_subscription subform;
+	Form_pg_subscription_db subdbform;
 	List	   *rstates;
 	bool		must_use_password;
 
@@ -2529,14 +2603,14 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 	 * exits if the subscription has already been dropped. See
 	 * InitializeLogRepWorker.
 	 */
-	rel = table_open(SubscriptionRelationId, RowExclusiveLock);
+	subrel = table_open(SubscriptionRelationId, RowExclusiveLock);
 
-	tup = SearchSysCache2(SUBSCRIPTIONNAME, ObjectIdGetDatum(MyDatabaseId),
+	subtup = SearchSysCache2(SUBSCRIPTIONNAME, ObjectIdGetDatum(MyDatabaseId),
 						  CStringGetDatum(stmt->subname));
 
-	if (!HeapTupleIsValid(tup))
+	if (!HeapTupleIsValid(subtup))
 	{
-		table_close(rel, NoLock);
+		table_close(subrel, NoLock);
 
 		if (!stmt->missing_ok)
 			ereport(ERROR,
@@ -2551,17 +2625,14 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 		return;
 	}
 
-	datum = SysCacheGetAttr(SUBSCRIPTIONOID, tup,
-							Anum_pg_subscription_subconninfo, &isnull);
-	if (!isnull)
-		subconninfo = TextDatumGetCString(datum);
+	/* Get subname */
+	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONOID, subtup,
+								   Anum_pg_subscription_subname);
+	subname = pstrdup(NameStr(*DatumGetName(datum)));
 
-	form = (Form_pg_subscription) GETSTRUCT(tup);
-	subid = form->oid;
-	subowner = form->subowner;
-	subserver = form->subserver;
-	subconflictlogrelid = form->subconflictlogrelid;
-	must_use_password = !superuser_arg(subowner) && form->subpasswordrequired;
+	subform = (Form_pg_subscription) GETSTRUCT(subtup);
+	subid = subform->oid;
+	subowner = subform->subowner;
 
 	/* must be owner */
 	if (!object_ownercheck(SubscriptionRelationId, subid, GetUserId()))
@@ -2577,14 +2648,28 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 	 */
 	LockSharedObject(SubscriptionRelationId, subid, 0, AccessExclusiveLock);
 
-	/* Get subname */
-	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONOID, tup,
-								   Anum_pg_subscription_subname);
-	subname = pstrdup(NameStr(*DatumGetName(datum)));
+	subdbrel = table_open(SubscriptionDbRelationId, RowExclusiveLock);
+
+	subdbtup = SearchSysCache1(SUBSCRIPTIONDBOID,
+							   ObjectIdGetDatum(subid));
+	if (!HeapTupleIsValid(subdbtup))
+		elog(ERROR, "cache lookup failed for subscription database data %u",
+			 subid);
+	subdbform = (Form_pg_subscription_db) GETSTRUCT(subdbtup);
+
+	subserver = subdbform->subserver;
+	subconflictlogrelid = subdbform->subconflictlogrelid;
+	must_use_password = !superuser_arg(subowner) && subdbform->subpasswordrequired;
+
+	/* Get conninfo */
+	datum = SysCacheGetAttr(SUBSCRIPTIONDBOID, subdbtup,
+							Anum_pg_subscription_db_subconninfo, &isnull);
+	if (!isnull)
+		subconninfo = TextDatumGetCString(datum);
 
 	/* Get slotname */
-	datum = SysCacheGetAttr(SUBSCRIPTIONOID, tup,
-							Anum_pg_subscription_subslotname, &isnull);
+	datum = SysCacheGetAttr(SUBSCRIPTIONDBOID, subdbtup,
+							Anum_pg_subscription_db_subslotname, &isnull);
 	if (!isnull)
 		slotname = pstrdup(NameStr(*DatumGetName(datum)));
 	else
@@ -2607,10 +2692,12 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 	ObjectAddressSet(myself, SubscriptionRelationId, subid);
 	EventTriggerSQLDropAddObject(&myself, true, true);
 
-	/* Remove the tuple from catalog. */
-	CatalogTupleDelete(rel, &tup->t_self);
+	/* Remove tuples from both catalogs. */
+	CatalogTupleDelete(subrel, &subtup->t_self);
+	CatalogTupleDelete(subdbrel, &subdbtup->t_self);
 
-	ReleaseSysCache(tup);
+	ReleaseSysCache(subtup);
+	ReleaseSysCache(subdbtup);
 
 	/*
 	 * Stop all the subscription workers immediately.
@@ -2704,7 +2791,8 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 	 */
 	if (!slotname && rstates == NIL)
 	{
-		table_close(rel, NoLock);
+		table_close(subrel, NoLock);
+		table_close(subdbrel, NoLock);
 		return;
 	}
 
@@ -2736,7 +2824,8 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 		{
 			/* be tidy */
 			list_free(rstates);
-			table_close(rel, NoLock);
+			table_close(subrel, NoLock);
+			table_close(subdbrel, NoLock);
 			return;
 		}
 		else
@@ -2793,7 +2882,8 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 	}
 	PG_END_TRY();
 
-	table_close(rel, NoLock);
+	table_close(subrel, NoLock);
+	table_close(subdbrel, NoLock);
 }
 
 /*
@@ -2863,26 +2953,44 @@ ReplicationSlotDropAtPubNode(WalReceiverConn *wrconn, char *slotname, bool missi
 static void
 AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 {
-	Form_pg_subscription form;
+	Form_pg_subscription subform;
 	AclResult	aclresult;
 
-	form = (Form_pg_subscription) GETSTRUCT(tup);
+	Form_pg_subscription_db subdbform;
+	HeapTuple   subdbtup;
+	bool		subpasswordrequired;
+	Oid			subserver;
+	Oid			subconflictlogrelid;
+
+	subform = (Form_pg_subscription) GETSTRUCT(tup);
 
 	/* Must only alter subscriptions belonging to the current database. */
-	Assert(form->subdbid == MyDatabaseId);
+	Assert(subform->subdbid == MyDatabaseId);
 
-	if (form->subowner == newOwnerId)
+	if (subform->subowner == newOwnerId)
 		return;
 
-	if (!object_ownercheck(SubscriptionRelationId, form->oid, GetUserId()))
+	if (!object_ownercheck(SubscriptionRelationId, subform->oid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_SUBSCRIPTION,
-					   NameStr(form->subname));
+					   NameStr(subform->subname));
+
+	subdbtup = SearchSysCache1(SUBSCRIPTIONDBOID,
+							   ObjectIdGetDatum(subform->oid));
+	if (!HeapTupleIsValid(subdbtup))
+		elog(ERROR, "cache lookup failed for subscription database data %u",
+			subform->oid);
+	subdbform = (Form_pg_subscription_db) GETSTRUCT(subdbtup);
+
+	subserver = subdbform->subserver;
+	subconflictlogrelid = subdbform->subconflictlogrelid;
+	subpasswordrequired = subdbform->subpasswordrequired;
+	ReleaseSysCache(subdbtup);
 
 	/*
 	 * Don't allow non-superuser modification of a subscription with
 	 * password_required=false.
 	 */
-	if (!form->subpasswordrequired && !superuser())
+	if (!subpasswordrequired && !superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("password_required=false is superuser-only"),
@@ -2909,9 +3017,9 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 	 * privileges on the server and that a user mapping exists. Note: does not
 	 * re-check the resulting connection string.
 	 */
-	if (OidIsValid(form->subserver))
+	if (OidIsValid(subserver))
 	{
-		ForeignServer *server = GetForeignServer(form->subserver);
+		ForeignServer *server = GetForeignServer(subserver);
 
 		aclresult = object_aclcheck(ForeignServerRelationId, server->serverid, newOwnerId, ACL_USAGE);
 		if (aclresult != ACLCHECK_OK)
@@ -2925,25 +3033,25 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 		GetUserMapping(newOwnerId, server->serverid);
 	}
 
-	form->subowner = newOwnerId;
+	subform->subowner = newOwnerId;
 	CatalogTupleUpdate(rel, &tup->t_self, tup);
 
 	/* Update owner of the conflict log table if it exists. */
-	if (OidIsValid(form->subconflictlogrelid))
-		ATExecChangeOwner(form->subconflictlogrelid, newOwnerId, true,
+	if (OidIsValid(subconflictlogrelid))
+		ATExecChangeOwner(subconflictlogrelid, newOwnerId, true,
 						  AccessExclusiveLock);
 
 	/* Update owner dependency reference */
 	changeDependencyOnOwner(SubscriptionRelationId,
-							form->oid,
+							subform->oid,
 							newOwnerId);
 
 	InvokeObjectPostAlterHook(SubscriptionRelationId,
-							  form->oid, 0);
+							  subform->oid, 0);
 
 	/* Wake up related background processes to handle this change quickly. */
 	ApplyLauncherWakeupAtCommit();
-	LogicalRepWorkersWakeupAtCommit(form->oid);
+	LogicalRepWorkersWakeupAtCommit(subform->oid);
 }
 
 /*

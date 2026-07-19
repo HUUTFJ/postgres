@@ -17,6 +17,7 @@
 #include "catalog/pg_publication.h"
 #include "catalog/pg_publication_rel.h"
 #include "catalog/pg_subscription.h"
+#include "catalog/pg_subscription_db.h"
 #include "commands/defrem.h"
 #include "commands/subscriptioncmds.h"
 #include "executor/executor.h"

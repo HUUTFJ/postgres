@@ -519,12 +519,16 @@ is($node_s->safe_psql($db2, 'SELECT COUNT(*) FROM pg_publication'),
 
 # Verify that all subtwophase states are pending or enabled,
 # e.g. there are no subscriptions where subtwophase is disabled ('d')
-is( $node_s->safe_psql(
-		'postgres',
-		"SELECT count(1) = 0 FROM pg_subscription WHERE subtwophasestate = 'd'"
-	),
-	't',
-	'subscriptions are created with the two-phase option enabled');
+for my $dbname ($db1, $db2)
+{
+    is(
+        $node_s->safe_psql(
+            $dbname,
+            "SELECT count(1) = 0 FROM pg_subscription_db WHERE subtwophasestate = 'd'"
+        ),
+        't',
+        "subscriptions use two-phase in database $dbname");
+}
 
 # Confirm the pre-existing subscription has been removed
 $result = $node_s->safe_psql(
@@ -578,29 +582,48 @@ is( $node_p->safe_psql(
 
 # Get subscription and publication names
 $result = $node_s->safe_psql(
-	'postgres', qq(
-    SELECT subname, subpublications FROM pg_subscription WHERE subname ~ '^pg_createsubscriber_'
+	$db1, qq(
+    SELECT subname, subpublications FROM pg_subscription, pg_subscription_db
+	WHERE subname ~ '^pg_createsubscriber_' AND pg_subscription.oid = pg_subscription_db.oid
 	ORDER BY subpublications;
 ));
 like(
-	$result,
-	qr/^pg_createsubscriber_\d+_[0-9a-f]+ \|\{pub2\}\n
-        pg_createsubscriber_\d+_[0-9a-f]+ \|\{test_pub3\}$/x,
-	'subscription and publication names are ok');
+    $result,
+    qr/^pg_createsubscriber_\d+_[0-9a-f]+\|\{test_pub3\}$/,
+    "subscription and publication names are ok in database $db1");
+
+$result = $node_s->safe_psql(
+	$db2, qq(
+    SELECT subname, subpublications FROM pg_subscription, pg_subscription_db
+	WHERE subname ~ '^pg_createsubscriber_' AND pg_subscription.oid = pg_subscription_db.oid
+	ORDER BY subpublications;
+));
+like(
+    $result,
+    qr/^pg_createsubscriber_\d+_[0-9a-f]+\|\{pub2\}$/,
+    "subscription and publication names are ok in database $db2");
 
 # Verify that the correct publications are being used
 $result = $node_s->safe_psql(
-	'postgres', qq(
-		SELECT d.datname, s.subpublications
+	$db1, qq(
+		SELECT sd.subpublications
 		FROM pg_subscription s
-		JOIN pg_database d ON d.oid = s.subdbid
+		JOIN pg_subscription_db sd ON s.oid = sd.oid
 		WHERE subname ~ '^pg_createsubscriber_'
-		ORDER BY s.subdbid
+	)
+);
+is( $result, qq({test_pub3}),
+	"subscriptions use the correct publications");
+
+$result = $node_s->safe_psql(
+	$db2, qq(
+		SELECT sd.subpublications
+		FROM pg_subscription s
+		JOIN pg_subscription_db sd ON s.oid = sd.oid
+		WHERE subname ~ '^pg_createsubscriber_'
     )
 );
-
-is( $result, qq($db1|{test_pub3}
-$db2|{pub2}),
+is( $result, qq({pub2}),
 	"subscriptions use the correct publications");
 
 # Verify that node K, set as a standby, is able to start correctly without

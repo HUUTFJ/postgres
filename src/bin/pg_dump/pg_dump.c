@@ -55,6 +55,7 @@
 #include "catalog/pg_publication_d.h"
 #include "catalog/pg_shdepend_d.h"
 #include "catalog/pg_subscription_d.h"
+#include "catalog/pg_subscription_db_d.h"
 #include "catalog/pg_type_d.h"
 #include "common/connect.h"
 #include "common/int.h"
@@ -5163,99 +5164,149 @@ getSubscriptions(Archive *fout)
 	query = createPQExpBuffer();
 
 	/* Get the subscriptions in current database. */
-	appendPQExpBufferStr(query,
-						 "SELECT s.tableoid, s.oid, s.subname,\n"
-						 " s.subowner,\n"
-						 " s.subconninfo, s.subslotname, s.subsynccommit,\n"
-						 " s.subpublications,\n");
+	if (fout->remoteVersion >= 200000)
+	{
+		appendPQExpBufferStr(query,
+							 "SELECT s.tableoid, s.oid, s.subname,\n"
+							 " s.subowner,\n"
+							 " sd.subconninfo, sd.subslotname,"
+							 " sd.subsynccommit,\n"
+							 " sd.subpublications,\n"
+							 " sd.subbinary,\n"
+							 " sd.substream,\n"
+							 " sd.subtwophasestate,\n"
+							 " sd.subdisableonerr,\n"
+							 " sd.subpasswordrequired,\n"
+							 " sd.subrunasowner,\n"
+							 " sd.suborigin,\n");
 
-	if (fout->remoteVersion >= 140000)
-		appendPQExpBufferStr(query, " s.subbinary,\n");
+		if (dopt->binary_upgrade)
+			appendPQExpBufferStr(query,
+								 " o.remote_lsn AS suboriginremotelsn,\n"
+								 " s.subenabled,\n");
+		else
+			appendPQExpBufferStr(query,
+								 " NULL AS suboriginremotelsn,\n"
+								 " false AS subenabled,\n");
+
+		appendPQExpBufferStr(query,
+							 " sd.subfailover,\n"
+							 " s.subretaindeadtuples,\n"
+							 " sd.submaxretention,\n"
+							 " sd.subwalrcvtimeout,\n"
+							 " fs.srvname AS subservername\n"
+							 "FROM pg_catalog.pg_subscription s\n"
+							 "JOIN pg_catalog.pg_subscription_db sd\n"
+							 "  ON sd.oid = s.oid\n"
+							 "LEFT JOIN pg_catalog.pg_foreign_server fs\n"
+							 "  ON fs.oid = sd.subserver\n");
+
+		if (dopt->binary_upgrade)
+			appendPQExpBufferStr(query,
+								"LEFT JOIN pg_catalog.pg_replication_origin_status o\n"
+								"  ON o.external_id = 'pg_' || s.oid::text\n");
+
+		appendPQExpBufferStr(query,
+							 "WHERE s.subdbid = "
+							 "(SELECT oid FROM pg_catalog.pg_database\n"
+							 " WHERE datname = pg_catalog.current_database())");
+	}
 	else
-		appendPQExpBufferStr(query, " false AS subbinary,\n");
-
-	if (fout->remoteVersion >= 140000)
-		appendPQExpBufferStr(query, " s.substream,\n");
-	else
-		appendPQExpBufferStr(query, " 'f' AS substream,\n");
-
-	if (fout->remoteVersion >= 150000)
+	{
 		appendPQExpBufferStr(query,
-							 " s.subtwophasestate,\n"
-							 " s.subdisableonerr,\n");
-	else
-		appendPQExpBuffer(query,
-						  " '%c' AS subtwophasestate,\n"
-						  " false AS subdisableonerr,\n",
-						  LOGICALREP_TWOPHASE_STATE_DISABLED);
+							 "SELECT s.tableoid, s.oid, s.subname,\n"
+							 " s.subowner,\n"
+							 " s.subconninfo, s.subslotname, s.subsynccommit,\n"
+							 " s.subpublications,\n");
 
-	if (fout->remoteVersion >= 160000)
+		if (fout->remoteVersion >= 140000)
+			appendPQExpBufferStr(query, " s.subbinary,\n");
+		else
+			appendPQExpBufferStr(query, " false AS subbinary,\n");
+
+		if (fout->remoteVersion >= 140000)
+			appendPQExpBufferStr(query, " s.substream,\n");
+		else
+			appendPQExpBufferStr(query, " 'f' AS substream,\n");
+
+		if (fout->remoteVersion >= 150000)
+			appendPQExpBufferStr(query,
+								 " s.subtwophasestate,\n"
+								 " s.subdisableonerr,\n");
+		else
+			appendPQExpBuffer(query,
+							  " '%c' AS subtwophasestate,\n"
+							  " false AS subdisableonerr,\n",
+							  LOGICALREP_TWOPHASE_STATE_DISABLED);
+
+		if (fout->remoteVersion >= 160000)
+			appendPQExpBufferStr(query,
+								 " s.subpasswordrequired,\n"
+								 " s.subrunasowner,\n"
+								 " s.suborigin,\n");
+		else
+			appendPQExpBuffer(query,
+							  " 't' AS subpasswordrequired,\n"
+							  " 't' AS subrunasowner,\n"
+							  " '%s' AS suborigin,\n",
+							  LOGICALREP_ORIGIN_ANY);
+
+		if (dopt->binary_upgrade && fout->remoteVersion >= 170000)
+			appendPQExpBufferStr(query, " o.remote_lsn AS suboriginremotelsn,\n"
+								 " s.subenabled,\n");
+		else
+			appendPQExpBufferStr(query, " NULL AS suboriginremotelsn,\n"
+								 " false AS subenabled,\n");
+
+		if (fout->remoteVersion >= 170000)
+			appendPQExpBufferStr(query,
+								 " s.subfailover,\n");
+		else
+			appendPQExpBufferStr(query,
+								 " false AS subfailover,\n");
+
+		if (fout->remoteVersion >= 190000)
+			appendPQExpBufferStr(query,
+								 " s.subretaindeadtuples,\n");
+		else
+			appendPQExpBufferStr(query,
+								 " false AS subretaindeadtuples,\n");
+
+		if (fout->remoteVersion >= 190000)
+			appendPQExpBufferStr(query,
+								 " s.submaxretention,\n");
+		else
+			appendPQExpBufferStr(query, " 0 AS submaxretention,\n");
+
+		if (fout->remoteVersion >= 190000)
+			appendPQExpBufferStr(query,
+								 " s.subwalrcvtimeout,\n");
+		else
+			appendPQExpBufferStr(query,
+								 " '-1' AS subwalrcvtimeout,\n");
+
+		if (fout->remoteVersion >= 190000)
+			appendPQExpBufferStr(query, " fs.srvname AS subservername\n");
+		else
+			appendPQExpBufferStr(query, " NULL AS subservername\n");
+
 		appendPQExpBufferStr(query,
-							 " s.subpasswordrequired,\n"
-							 " s.subrunasowner,\n"
-							 " s.suborigin,\n");
-	else
-		appendPQExpBuffer(query,
-						  " 't' AS subpasswordrequired,\n"
-						  " 't' AS subrunasowner,\n"
-						  " '%s' AS suborigin,\n",
-						  LOGICALREP_ORIGIN_ANY);
+							 "FROM pg_subscription s\n");
 
-	if (dopt->binary_upgrade && fout->remoteVersion >= 170000)
-		appendPQExpBufferStr(query, " o.remote_lsn AS suboriginremotelsn,\n"
-							 " s.subenabled,\n");
-	else
-		appendPQExpBufferStr(query, " NULL AS suboriginremotelsn,\n"
-							 " false AS subenabled,\n");
+		if (fout->remoteVersion >= 190000)
+			appendPQExpBufferStr(query,
+								 "LEFT JOIN pg_catalog.pg_foreign_server fs \n"
+								 "    ON fs.oid = s.subserver \n");
 
-	if (fout->remoteVersion >= 170000)
+		if (dopt->binary_upgrade && fout->remoteVersion >= 170000)
+			appendPQExpBufferStr(query,
+								 "LEFT JOIN pg_catalog.pg_replication_origin_status o \n"
+								 "    ON o.external_id = 'pg_' || s.oid::text \n");
+
 		appendPQExpBufferStr(query,
-							 " s.subfailover,\n");
-	else
-		appendPQExpBufferStr(query,
-							 " false AS subfailover,\n");
-
-	if (fout->remoteVersion >= 190000)
-		appendPQExpBufferStr(query,
-							 " s.subretaindeadtuples,\n");
-	else
-		appendPQExpBufferStr(query,
-							 " false AS subretaindeadtuples,\n");
-
-	if (fout->remoteVersion >= 190000)
-		appendPQExpBufferStr(query,
-							 " s.submaxretention,\n");
-	else
-		appendPQExpBufferStr(query, " 0 AS submaxretention,\n");
-
-	if (fout->remoteVersion >= 190000)
-		appendPQExpBufferStr(query,
-							 " s.subwalrcvtimeout,\n");
-	else
-		appendPQExpBufferStr(query,
-							 " '-1' AS subwalrcvtimeout,\n");
-
-	if (fout->remoteVersion >= 190000)
-		appendPQExpBufferStr(query, " fs.srvname AS subservername\n");
-	else
-		appendPQExpBufferStr(query, " NULL AS subservername\n");
-
-	appendPQExpBufferStr(query,
-						 "FROM pg_subscription s\n");
-
-	if (fout->remoteVersion >= 190000)
-		appendPQExpBufferStr(query,
-							 "LEFT JOIN pg_catalog.pg_foreign_server fs \n"
-							 "    ON fs.oid = s.subserver \n");
-
-	if (dopt->binary_upgrade && fout->remoteVersion >= 170000)
-		appendPQExpBufferStr(query,
-							 "LEFT JOIN pg_catalog.pg_replication_origin_status o \n"
-							 "    ON o.external_id = 'pg_' || s.oid::text \n");
-
-	appendPQExpBufferStr(query,
-						 "WHERE s.subdbid = (SELECT oid FROM pg_database\n"
-						 "                   WHERE datname = current_database())");
+							 "WHERE s.subdbid = (SELECT oid FROM pg_database\n"
+							 "                   WHERE datname = current_database())");
+	}
 
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 

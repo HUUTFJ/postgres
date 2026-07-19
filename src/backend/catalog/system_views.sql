@@ -1532,15 +1532,14 @@ CREATE VIEW pg_replication_origin_status AS
 
 REVOKE ALL ON pg_replication_origin_status FROM public;
 
--- All columns of pg_subscription except subconninfo are publicly readable.
-REVOKE ALL ON pg_subscription FROM public;
-GRANT SELECT (oid, subdbid, subskiplsn, subname, subowner, subenabled,
-              subbinary, substream, subtwophasestate, subdisableonerr,
-			  subpasswordrequired, subrunasowner, subfailover,
-              subretaindeadtuples, submaxretention, subretentionactive,
-              subserver, subconflictlogrelid, subconflictlogdest, subslotname,
-              subsynccommit, subwalrcvtimeout, subpublications, suborigin)
-    ON pg_subscription TO public;
+-- All columns of pg_subscription_db except subconninfo are publicly readable.
+REVOKE ALL ON pg_subscription_db FROM public;
+GRANT SELECT (oid, subskiplsn, subbinary, substream, subtwophasestate,
+              subdisableonerr, subpasswordrequired, subrunasowner, subfailover,
+              submaxretention, subserver, subconflictlogrelid,
+              subconflictlogdest, subslotname, subsynccommit, subwalrcvtimeout,
+              subpublications, suborigin)
+    ON pg_subscription_db TO public;
 
 CREATE VIEW pg_stat_subscription_stats AS
     SELECT

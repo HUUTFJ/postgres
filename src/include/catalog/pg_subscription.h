@@ -1,7 +1,7 @@
 /* -------------------------------------------------------------------------
  *
  * pg_subscription.h
- *	  definition of the "subscription" system catalog (pg_subscription)
+ *	  definition of the shared subscription system catalog (pg_subscription)
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -30,16 +30,22 @@
  */
 
 /*
- * Technically, the subscriptions live inside the database, so a shared catalog
- * seems weird, but the replication launcher process needs to access all of
- * them to be able to start the workers, so we have to put them in a shared,
- * nailed catalog.
+ * pg_subscription is the shared part of a subscription's catalog data.  It
+ * must be shared because the logical replication launcher needs to find
+ * subscriptions in all databases without connecting to each database.
+ * Therefore, this catalog contains the subscription's identity and the fields
+ * needed by cluster-wide processes.  It must not contain references to
+ * database-local objects.
  *
- * CAUTION:  There is a GRANT in system_views.sql to grant public select
- * access on all columns except subconninfo.  When you add a new column
- * here, be sure to update that (or, if the new column is not to be publicly
- * readable, update associated comments and catalogs.sgml instead).
+ * The remaining subscription properties are stored in pg_subscription_db,
+ * which is local to the database identified by subdbid.
+ *
+ * pg_subscription remains the catalog that represents the subscription as a
+ * database object.  Object addresses, ownership dependencies, object locks,
+ * and event-trigger notifications therefore use SubscriptionRelationId and
+ * the OID of this catalog.
  */
+
 BEGIN_CATALOG_STRUCT
 
 CATALOG(pg_subscription,6100,SubscriptionRelationId) BKI_SHARED_RELATION BKI_ROWTYPE_OID(6101,SubscriptionRelation_Rowtype_Id) BKI_SCHEMA_MACRO
@@ -49,9 +55,6 @@ CATALOG(pg_subscription,6100,SubscriptionRelationId) BKI_SHARED_RELATION BKI_ROW
 	Oid			subdbid BKI_LOOKUP(pg_database);	/* Database the
 													 * subscription is in. */
 
-	XLogRecPtr	subskiplsn;		/* All changes finished at this LSN are
-								 * skipped */
-
 	NameData	subname;		/* Name of the subscription */
 
 	Oid			subowner BKI_LOOKUP(pg_authid); /* Owner of the subscription */
@@ -59,76 +62,18 @@ CATALOG(pg_subscription,6100,SubscriptionRelationId) BKI_SHARED_RELATION BKI_ROW
 	bool		subenabled;		/* True if the subscription is enabled (the
 								 * worker should be running) */
 
-	bool		subbinary;		/* True if the subscription wants the
-								 * publisher to send data in binary */
-
-	char		substream;		/* Stream in-progress transactions. See
-								 * LOGICALREP_STREAM_xxx constants. */
-
-	char		subtwophasestate;	/* Stream two-phase transactions */
-
-	bool		subdisableonerr;	/* True if a worker error should cause the
-									 * subscription to be disabled */
-
-	bool		subpasswordrequired;	/* Must connection use a password? */
-
-	bool		subrunasowner;	/* True if replication should execute as the
-								 * subscription owner */
-
-	bool		subfailover;	/* True if the associated replication slots
-								 * (i.e. the main slot and the table sync
-								 * slots) in the upstream database are enabled
-								 * to be synchronized to the standbys. */
-
 	bool		subretaindeadtuples;	/* True if dead tuples useful for
 										 * conflict detection are retained */
-
-	int32		submaxretention;	/* The maximum duration (in milliseconds)
-									 * for which information useful for
-									 * conflict detection can be retained */
 
 	bool		subretentionactive; /* True if retain_dead_tuples is enabled
 									 * and the retention duration has not
 									 * exceeded max_retention_duration, when
 									 * defined */
-
-	Oid			subserver BKI_LOOKUP_OPT(pg_foreign_server);	/* If connection uses
-																 * server */
-
-	Oid			subconflictlogrelid;	/* Relid of the conflict log table. */
-#ifdef CATALOG_VARLEN			/* variable-length fields start here */
-
-	/*
-	 * Strategy for logging replication conflicts: 'log' - server log only,
-	 * 'table' - conflict log table only, 'all' - both log and table.
-	 */
-	text		subconflictlogdest BKI_FORCE_NOT_NULL;
-
-	/* Connection string to the publisher */
-	text		subconninfo;	/* Set if connecting with connection string */
-
-	/* Slot name on publisher */
-	NameData	subslotname BKI_FORCE_NULL;
-
-	/* Synchronous commit setting for worker */
-	text		subsynccommit BKI_FORCE_NOT_NULL;
-
-	/* wal_receiver_timeout setting for worker */
-	text		subwalrcvtimeout BKI_FORCE_NOT_NULL;
-
-	/* List of publications subscribed to */
-	text		subpublications[1] BKI_FORCE_NOT_NULL;
-
-	/* Only publish data originating from the specified origin */
-	text		suborigin BKI_DEFAULT(LOGICALREP_ORIGIN_ANY);
-#endif
 } FormData_pg_subscription;
 
 END_CATALOG_STRUCT
 
 typedef FormData_pg_subscription *Form_pg_subscription;
-
-DECLARE_TOAST_WITH_MACRO(pg_subscription, 4183, 4184, PgSubscriptionToastTable, PgSubscriptionToastIndex);
 
 DECLARE_UNIQUE_INDEX_PKEY(pg_subscription_oid_index, 6114, SubscriptionObjectIndexId, pg_subscription, btree(oid oid_ops));
 DECLARE_UNIQUE_INDEX(pg_subscription_subname_index, 6115, SubscriptionNameIndexId, pg_subscription, btree(subdbid oid_ops, subname name_ops));
@@ -136,6 +81,10 @@ DECLARE_UNIQUE_INDEX(pg_subscription_subname_index, 6115, SubscriptionNameIndexI
 MAKE_SYSCACHE(SUBSCRIPTIONOID, pg_subscription_oid_index, 4);
 MAKE_SYSCACHE(SUBSCRIPTIONNAME, pg_subscription_subname_index, 4);
 
+/*
+ * Subscription data structure used in memory. Attributes in pg_subscription
+ * and pg_subscription_db are combined into this.
+ */
 typedef struct Subscription
 {
 	MemoryContext cxt;			/* mem cxt containing this subscription */
@@ -182,45 +131,6 @@ typedef struct Subscription
 								 * specified origin */
 	char	   *conflictlogdest;	/* Conflict log destination */
 } Subscription;
-
-#ifdef EXPOSE_TO_CLIENT_CODE
-
-/*
- * two_phase tri-state values. See comments atop worker.c to know more about
- * these states.
- */
-#define LOGICALREP_TWOPHASE_STATE_DISABLED 'd'
-#define LOGICALREP_TWOPHASE_STATE_PENDING 'p'
-#define LOGICALREP_TWOPHASE_STATE_ENABLED 'e'
-
-/*
- * The subscription will request the publisher to only send changes that do not
- * have any origin.
- */
-#define LOGICALREP_ORIGIN_NONE "none"
-
-/*
- * The subscription will request the publisher to send changes regardless
- * of their origin.
- */
-#define LOGICALREP_ORIGIN_ANY "any"
-
-/* Disallow streaming in-progress transactions. */
-#define LOGICALREP_STREAM_OFF 'f'
-
-/*
- * Streaming in-progress transactions are written to a temporary file and
- * applied only after the transaction is committed on upstream.
- */
-#define LOGICALREP_STREAM_ON 't'
-
-/*
- * Streaming in-progress transactions are applied immediately via a parallel
- * apply worker.
- */
-#define LOGICALREP_STREAM_PARALLEL 'p'
-
-#endif							/* EXPOSE_TO_CLIENT_CODE */
 
 extern Subscription *GetSubscription(Oid subid, bool missing_ok,
 									 bool conninfo_needed,

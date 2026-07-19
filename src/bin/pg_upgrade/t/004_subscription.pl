@@ -364,7 +364,7 @@ $new_sub->start;
 # still have subenabled, subfailover, and subretaindeadtuples set to true,
 # while regress_sub5 should have both set to false.
 $result = $new_sub->safe_psql('postgres',
-	"SELECT subname, subenabled, subfailover, subretaindeadtuples FROM pg_subscription ORDER BY subname"
+	"SELECT subname, subenabled, subfailover, subretaindeadtuples FROM pg_subscription, pg_subscription_db WHERE pg_subscription.oid = pg_subscription_db.oid ORDER BY subname"
 );
 is( $result, qq(regress_sub4|t|t|t
 regress_sub5|f|f|f),

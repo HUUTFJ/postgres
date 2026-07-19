@@ -28,6 +28,7 @@
 #include "catalog/pg_publication_d.h"
 #include "catalog/pg_statistic_ext_d.h"
 #include "catalog/pg_subscription_d.h"
+#include "catalog/pg_subscription_db_d.h"
 #include "catalog/pg_type_d.h"
 #include "common.h"
 #include "common/logging.h"
@@ -6896,117 +6897,195 @@ describeSubscriptions(const char *pattern, bool verbose)
 	false, false, false, false, false, false, false};
 
 	initPQExpBuffer(&buf);
-
 	printfPQExpBuffer(&buf, "/* %s */\n", _("Get matching subscriptions"));
-	appendPQExpBuffer(&buf,
-					  "SELECT subname AS \"%s\"\n"
-					  ",  pg_catalog.pg_get_userbyid(subowner) AS \"%s\"\n"
-					  ",  subenabled AS \"%s\"\n"
-					  ",  subpublications AS \"%s\"\n",
-					  gettext_noop("Name"),
-					  gettext_noop("Owner"),
-					  gettext_noop("Enabled"),
-					  gettext_noop("Publication"));
-
-	if (verbose)
+	if (pset.sversion >= 200000)
 	{
-		/* Binary mode and streaming are only supported in v14 and higher */
-		if (pset.sversion >= 140000)
+		appendPQExpBuffer(&buf,
+						  "SELECT s.subname AS \"%s\"\n"
+						  ",  pg_catalog.pg_get_userbyid(s.subowner) AS \"%s\"\n"
+						  ",  s.subenabled AS \"%s\"\n"
+						  ",  sd.subpublications AS \"%s\"\n",
+						  gettext_noop("Name"),
+						  gettext_noop("Owner"),
+						  gettext_noop("Enabled"),
+						  gettext_noop("Publication"));
+		if (verbose)
 		{
 			appendPQExpBuffer(&buf,
-							  ", subbinary AS \"%s\"\n",
-							  gettext_noop("Binary"));
+							  ",  sd.subbinary AS \"%s\"\n"
+							  ",  (CASE sd.substream\n"
+							  "      WHEN " CppAsString2(LOGICALREP_STREAM_OFF) " THEN 'off'\n"
+							  "      WHEN " CppAsString2(LOGICALREP_STREAM_ON) " THEN 'on'\n"
+							  "      WHEN " CppAsString2(LOGICALREP_STREAM_PARALLEL) " THEN 'parallel'\n"
+							  "    END) AS \"%s\"\n"
+							  ",  sd.subtwophasestate AS \"%s\"\n"
+							  ",  sd.subdisableonerr AS \"%s\"\n"
+							  ",  sd.suborigin AS \"%s\"\n"
+							  ",  sd.subpasswordrequired AS \"%s\"\n"
+							  ",  sd.subrunasowner AS \"%s\"\n"
+							  ",  sd.subfailover AS \"%s\"\n"
+							  ",  (SELECT srvname"
+							  "      FROM pg_catalog.pg_foreign_server"
+							  "     WHERE oid = sd.subserver) AS \"%s\"\n"
+							  ",  s.subretaindeadtuples AS \"%s\"\n"
+							  ",  sd.submaxretention AS \"%s\"\n"
+							  ",  s.subretentionactive AS \"%s\"\n"
+							  ",  sd.subsynccommit AS \"%s\"\n"
+							  ",  sd.subconninfo AS \"%s\"\n"
+							  ",  sd.subwalrcvtimeout AS \"%s\"\n"
+							  ",  sd.subskiplsn AS \"%s\"\n"
+							  ",  pg_catalog.obj_description("
+							  "s.oid, 'pg_subscription') AS \"%s\"\n",
+							  gettext_noop("Binary"),
+							  gettext_noop("Streaming"),
+							  gettext_noop("Two-phase commit"),
+							  gettext_noop("Disable on error"),
+							  gettext_noop("Origin"),
+							  gettext_noop("Password required"),
+							  gettext_noop("Run as owner?"),
+							  gettext_noop("Failover"),
+							  gettext_noop("Server"),
+							  gettext_noop("Retain dead tuples"),
+							  gettext_noop("Max retention duration"),
+							  gettext_noop("Retention active"),
+							  gettext_noop("Synchronous commit"),
+							  gettext_noop("Conninfo"),
+							  gettext_noop("Receiver timeout"),
+							  gettext_noop("Skip LSN"),
+							  gettext_noop("Description"));
+		}
+
+		appendPQExpBufferStr(&buf,
+							 "FROM pg_catalog.pg_subscription s\n"
+							 "JOIN pg_catalog.pg_subscription_db sd"
+							 " ON sd.oid = s.oid\n"
+							 "WHERE s.subdbid = (SELECT oid\n"
+							 "                   FROM pg_catalog.pg_database\n"
+							 "                   WHERE datname = "
+							 "pg_catalog.current_database())");
+
+		if (!validateSQLNamePattern(&buf, pattern, true, false,
+									NULL, "s.subname", NULL,
+									NULL,
+									NULL, 1))
+		{
+			termPQExpBuffer(&buf);
+			return false;
+		}
+
+	}
+	else
+	{
+		appendPQExpBuffer(&buf,
+						  "SELECT subname AS \"%s\"\n"
+						  ",  pg_catalog.pg_get_userbyid(subowner) AS \"%s\"\n"
+						  ",  subenabled AS \"%s\"\n"
+						  ",  subpublications AS \"%s\"\n",
+						  gettext_noop("Name"),
+						  gettext_noop("Owner"),
+						  gettext_noop("Enabled"),
+						  gettext_noop("Publication"));
+
+		if (verbose)
+		{
+			/* Binary mode and streaming are only supported in v14 and higher */
+			if (pset.sversion >= 140000)
+			{
+				appendPQExpBuffer(&buf,
+								  ", subbinary AS \"%s\"\n",
+								  gettext_noop("Binary"));
+
+				if (pset.sversion >= 160000)
+					appendPQExpBuffer(&buf,
+									  ", (CASE substream\n"
+									  "    WHEN " CppAsString2(LOGICALREP_STREAM_OFF) " THEN 'off'\n"
+									  "    WHEN " CppAsString2(LOGICALREP_STREAM_ON) " THEN 'on'\n"
+									  "    WHEN " CppAsString2(LOGICALREP_STREAM_PARALLEL) " THEN 'parallel'\n"
+									  "   END) AS \"%s\"\n",
+									  gettext_noop("Streaming"));
+				else
+					appendPQExpBuffer(&buf,
+									  ", substream AS \"%s\"\n",
+									  gettext_noop("Streaming"));
+			}
+
+			/* Two_phase and disable_on_error are only supported in v15 and higher */
+			if (pset.sversion >= 150000)
+				appendPQExpBuffer(&buf,
+								  ", subtwophasestate AS \"%s\"\n"
+								  ", subdisableonerr AS \"%s\"\n",
+								  gettext_noop("Two-phase commit"),
+								  gettext_noop("Disable on error"));
 
 			if (pset.sversion >= 160000)
 				appendPQExpBuffer(&buf,
-								  ", (CASE substream\n"
-								  "    WHEN " CppAsString2(LOGICALREP_STREAM_OFF) " THEN 'off'\n"
-								  "    WHEN " CppAsString2(LOGICALREP_STREAM_ON) " THEN 'on'\n"
-								  "    WHEN " CppAsString2(LOGICALREP_STREAM_PARALLEL) " THEN 'parallel'\n"
-								  "   END) AS \"%s\"\n",
-								  gettext_noop("Streaming"));
-			else
+								  ", suborigin AS \"%s\"\n"
+								  ", subpasswordrequired AS \"%s\"\n"
+								  ", subrunasowner AS \"%s\"\n",
+								  gettext_noop("Origin"),
+								  gettext_noop("Password required"),
+								  gettext_noop("Run as owner?"));
+
+			if (pset.sversion >= 170000)
 				appendPQExpBuffer(&buf,
-								  ", substream AS \"%s\"\n",
-								  gettext_noop("Streaming"));
+								  ", subfailover AS \"%s\"\n",
+								  gettext_noop("Failover"));
+			if (pset.sversion >= 190000)
+			{
+				appendPQExpBuffer(&buf,
+								  ", (select srvname from pg_catalog.pg_foreign_server where oid=subserver) AS \"%s\"\n",
+								  gettext_noop("Server"));
+
+				appendPQExpBuffer(&buf,
+								  ", subretaindeadtuples AS \"%s\"\n",
+								  gettext_noop("Retain dead tuples"));
+
+				appendPQExpBuffer(&buf,
+								  ", submaxretention AS \"%s\"\n",
+								  gettext_noop("Max retention duration"));
+
+				appendPQExpBuffer(&buf,
+								  ", subretentionactive AS \"%s\"\n",
+								  gettext_noop("Retention active"));
+			}
+
+			appendPQExpBuffer(&buf,
+							  ",  subsynccommit AS \"%s\"\n"
+							  ",  subconninfo AS \"%s\"\n",
+							  gettext_noop("Synchronous commit"),
+							  gettext_noop("Conninfo"));
+
+			if (pset.sversion >= 190000)
+				appendPQExpBuffer(&buf,
+								  ", subwalrcvtimeout AS \"%s\"\n",
+								  gettext_noop("Receiver timeout"));
+
+			/* Skip LSN is only supported in v15 and higher */
+			if (pset.sversion >= 150000)
+				appendPQExpBuffer(&buf,
+								  ", subskiplsn AS \"%s\"\n",
+								  gettext_noop("Skip LSN"));
+
+			appendPQExpBuffer(&buf,
+							  ",  pg_catalog.obj_description(oid, 'pg_subscription') AS \"%s\"\n",
+							  gettext_noop("Description"));
 		}
 
-		/* Two_phase and disable_on_error are only supported in v15 and higher */
-		if (pset.sversion >= 150000)
-			appendPQExpBuffer(&buf,
-							  ", subtwophasestate AS \"%s\"\n"
-							  ", subdisableonerr AS \"%s\"\n",
-							  gettext_noop("Two-phase commit"),
-							  gettext_noop("Disable on error"));
+		/* Only display subscriptions in current database. */
+		appendPQExpBufferStr(&buf,
+							"FROM pg_catalog.pg_subscription\n"
+							"WHERE subdbid = (SELECT oid\n"
+							"                 FROM pg_catalog.pg_database\n"
+							"                 WHERE datname = pg_catalog.current_database())");
 
-		if (pset.sversion >= 160000)
-			appendPQExpBuffer(&buf,
-							  ", suborigin AS \"%s\"\n"
-							  ", subpasswordrequired AS \"%s\"\n"
-							  ", subrunasowner AS \"%s\"\n",
-							  gettext_noop("Origin"),
-							  gettext_noop("Password required"),
-							  gettext_noop("Run as owner?"));
-
-		if (pset.sversion >= 170000)
-			appendPQExpBuffer(&buf,
-							  ", subfailover AS \"%s\"\n",
-							  gettext_noop("Failover"));
-		if (pset.sversion >= 190000)
+		if (!validateSQLNamePattern(&buf, pattern, true, false,
+									NULL, "subname", NULL,
+									NULL,
+									NULL, 1))
 		{
-			appendPQExpBuffer(&buf,
-							  ", (select srvname from pg_catalog.pg_foreign_server where oid=subserver) AS \"%s\"\n",
-							  gettext_noop("Server"));
-
-			appendPQExpBuffer(&buf,
-							  ", subretaindeadtuples AS \"%s\"\n",
-							  gettext_noop("Retain dead tuples"));
-
-			appendPQExpBuffer(&buf,
-							  ", submaxretention AS \"%s\"\n",
-							  gettext_noop("Max retention duration"));
-
-			appendPQExpBuffer(&buf,
-							  ", subretentionactive AS \"%s\"\n",
-							  gettext_noop("Retention active"));
+			termPQExpBuffer(&buf);
+			return false;
 		}
-
-		appendPQExpBuffer(&buf,
-						  ",  subsynccommit AS \"%s\"\n"
-						  ",  subconninfo AS \"%s\"\n",
-						  gettext_noop("Synchronous commit"),
-						  gettext_noop("Conninfo"));
-
-		if (pset.sversion >= 190000)
-			appendPQExpBuffer(&buf,
-							  ", subwalrcvtimeout AS \"%s\"\n",
-							  gettext_noop("Receiver timeout"));
-
-		/* Skip LSN is only supported in v15 and higher */
-		if (pset.sversion >= 150000)
-			appendPQExpBuffer(&buf,
-							  ", subskiplsn AS \"%s\"\n",
-							  gettext_noop("Skip LSN"));
-
-		appendPQExpBuffer(&buf,
-						  ",  pg_catalog.obj_description(oid, 'pg_subscription') AS \"%s\"\n",
-						  gettext_noop("Description"));
-	}
-
-	/* Only display subscriptions in current database. */
-	appendPQExpBufferStr(&buf,
-						 "FROM pg_catalog.pg_subscription\n"
-						 "WHERE subdbid = (SELECT oid\n"
-						 "                 FROM pg_catalog.pg_database\n"
-						 "                 WHERE datname = pg_catalog.current_database())");
-
-	if (!validateSQLNamePattern(&buf, pattern, true, false,
-								NULL, "subname", NULL,
-								NULL,
-								NULL, 1))
-	{
-		termPQExpBuffer(&buf);
-		return false;
 	}
 
 	appendPQExpBufferStr(&buf, "ORDER BY 1;");

@@ -78,6 +78,7 @@
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_subscription.h"
+#include "catalog/pg_subscription_db.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"

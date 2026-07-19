@@ -42,16 +42,16 @@ CREATE SUBSCRIPTION regress_testsub CONNECTION 'dbname=regress_doesnotexist' PUB
 COMMENT ON SUBSCRIPTION regress_testsub IS 'test subscription';
 SELECT obj_description(s.oid, 'pg_subscription') FROM pg_subscription s;
 
--- Check that only subconninfo is not publicly readable in pg_subscription.
+-- Check that only subconninfo is not publicly readable in pg_subscription_db.
 SELECT count(*) = 0 AS ok
     FROM pg_attribute
-    WHERE attrelid = 'pg_catalog.pg_subscription'::regclass AND attnum > 0 AND NOT attisdropped
+    WHERE attrelid = 'pg_catalog.pg_subscription_db'::regclass AND attnum > 0 AND NOT attisdropped
         AND ((attname = 'subconninfo'
 	        AND has_column_privilege('regress_subscription_user_dummy',
-		    'pg_catalog.pg_subscription', attname, 'SELECT'))
+		    'pg_catalog.pg_subscription_db', attname, 'SELECT'))
             OR (attname <> 'subconninfo'
 	        AND NOT has_column_privilege('regress_subscription_user_dummy',
-		    'pg_catalog.pg_subscription', attname, 'SELECT')));
+		    'pg_catalog.pg_subscription_db', attname, 'SELECT')));
 
 -- Check if the subscription stats are created and stats_reset is updated
 -- by pg_stat_reset_subscription_stats().
@@ -488,7 +488,7 @@ CREATE SUBSCRIPTION regress_conflict_fail CONNECTION 'dbname=regress_doesnotexis
 -- verify subconflictlogdest is 'log' and subconflictlogrelid is 0 (InvalidOid) for default case
 CREATE SUBSCRIPTION regress_conflict_log_default CONNECTION 'dbname=regress_doesnotexist' PUBLICATION testpub WITH (connect = false);
 SELECT subname, subconflictlogdest, subconflictlogrelid
-FROM pg_subscription WHERE subname = 'regress_conflict_log_default';
+FROM pg_subscription, pg_subscription_db WHERE subname = 'regress_conflict_log_default' AND pg_subscription.oid = pg_subscription_db.oid;
 
 -- fail - empty string parameter value
 CREATE SUBSCRIPTION regress_conflict_empty_str CONNECTION 'dbname=regress_doesnotexist' PUBLICATION testpub WITH (connect = false, conflict_log_destination = '');
@@ -496,15 +496,17 @@ CREATE SUBSCRIPTION regress_conflict_empty_str CONNECTION 'dbname=regress_doesno
 -- this should generate a conflict log table named pg_conflict_log_$subid$
 CREATE SUBSCRIPTION regress_conflict_test1 CONNECTION 'dbname=regress_doesnotexist' PUBLICATION testpub WITH (connect = false, conflict_log_destination = 'table');
 
--- check metadata in pg_subscription: destination should be 'table' and subconflictlogrelid valid
+-- check metadata in pg_subscription and pg_subscription_db: destination should
+-- be 'table' and subconflictlogrelid valid
 SELECT subname, subconflictlogdest, subconflictlogrelid > 0 AS has_relid
-FROM pg_subscription WHERE subname = 'regress_conflict_test1';
+FROM pg_subscription, pg_subscription_db WHERE subname = 'regress_conflict_test1' AND pg_subscription.oid = pg_subscription_db.oid;
 
 -- verify the physical table exists, its OID matches subconflictlogrelid,
 -- and it is located in the 'pg_conflict' namespace
-SELECT n.nspname, (c.oid = s.subconflictlogrelid) AS "oid_matches"
+SELECT n.nspname, (c.oid = sd.subconflictlogrelid) AS "oid_matches"
 FROM pg_class c
 JOIN pg_subscription s ON c.relname = 'pg_conflict_log_' || s.oid
+JOIN pg_subscription_db sd ON s.oid = sd.oid
 JOIN pg_namespace n ON c.relnamespace = n.oid
 WHERE s.subname = 'regress_conflict_test1';
 
@@ -561,20 +563,21 @@ ALTER SUBSCRIPTION regress_conflict_test2 SET (conflict_log_destination = 'all')
 
 -- verify metadata after ALTER (destination should be 'all')
 SELECT subname, subconflictlogdest, subconflictlogrelid > 0 AS has_relid
-FROM pg_subscription WHERE subname = 'regress_conflict_test2';
+FROM pg_subscription, pg_subscription_db WHERE subname = 'regress_conflict_test2' AND pg_subscription.oid = pg_subscription_db.oid;
 
 -- transition from 'all' to 'table'
 -- should NOT drop the table, only change destination string
-SELECT subconflictlogrelid AS old_relid FROM pg_subscription WHERE subname = 'regress_conflict_test2' \gset
+SELECT subconflictlogrelid AS old_relid FROM pg_subscription, pg_subscription_db
+WHERE subname = 'regress_conflict_test2' AND pg_subscription.oid = pg_subscription_db.oid \gset
 ALTER SUBSCRIPTION regress_conflict_test2 SET (conflict_log_destination = 'table');
 SELECT subconflictlogdest, subconflictlogrelid = :old_relid AS relid_unchanged
-FROM pg_subscription WHERE subname = 'regress_conflict_test2';
+FROM pg_subscription, pg_subscription_db WHERE subname = 'regress_conflict_test2' AND pg_subscription.oid = pg_subscription_db.oid;
 
 -- transition from 'table' to 'log'
 -- should drop the table and clear subconflictlogrelid
 ALTER SUBSCRIPTION regress_conflict_test2 SET (conflict_log_destination = 'log');
 SELECT subconflictlogdest, subconflictlogrelid
-FROM pg_subscription WHERE subname = 'regress_conflict_test2';
+FROM pg_subscription, pg_subscription_db WHERE subname = 'regress_conflict_test2' AND pg_subscription.oid = pg_subscription_db.oid;
 
 -- verify the physical table is gone
 SELECT count(*)
@@ -591,9 +594,9 @@ WHERE s.subname = 'regress_conflict_test2';
 SELECT n.nspname, pg_relation_is_publishable(c.oid)
 FROM pg_class c
 JOIN pg_namespace n ON c.relnamespace = n.oid
-JOIN pg_subscription s ON s.subconflictlogrelid = c.oid
+JOIN pg_subscription_db sd ON sd.subconflictlogrelid = c.oid
+JOIN pg_subscription s ON s.oid = sd.oid
 WHERE s.subname = 'regress_conflict_test1';
-
 --
 -- Table Protection and Lifecycle Management
 --

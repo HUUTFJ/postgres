@@ -43,7 +43,9 @@ sub test_skip_lsn
 
 	# Wait for the failed transaction to be skipped
 	$node_subscriber->poll_query_until('postgres',
-		"SELECT subskiplsn = '0/0' FROM pg_subscription WHERE subname = 'sub'"
+		"SELECT subskiplsn = '0/0' FROM pg_subscription_db sd
+		JOIN pg_subscription s ON sd.oid = s.oid
+		WHERE subname = 'sub'"
 	);
 
 	# Check the log to ensure that the transaction is skipped, and advance the

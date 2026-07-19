@@ -377,8 +377,6 @@ IsSharedRelation(Oid relationId)
 		relationId == PgShdescriptionToastIndex ||
 		relationId == PgShseclabelToastTable ||
 		relationId == PgShseclabelToastIndex ||
-		relationId == PgSubscriptionToastTable ||
-		relationId == PgSubscriptionToastIndex ||
 		relationId == PgTablespaceToastTable ||
 		relationId == PgTablespaceToastIndex)
 		return true;

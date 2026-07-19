@@ -83,8 +83,9 @@ typedef struct ConflictTupleInfo
  * Defines where logical replication conflict details are recorded.
  *
  * While stored as a text-based array/string in
- * pg_subscription.subconflictlogdest for user readability and extensibility,
- * we map these to an internal enum to allow for efficient checks.
+ * pg_subscription_db.subconflictlogdest for user readability and
+ * extensibility, we map these to an internal enum to allow for efficient
+ * checks.
  */
 typedef enum ConflictLogDest
 {

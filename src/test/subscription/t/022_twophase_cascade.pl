@@ -108,7 +108,7 @@ $node_B->wait_for_catchup($appname_C);
 
 # Also wait for two-phase to be enabled
 my $twophase_query =
-  "SELECT count(1) = 0 FROM pg_subscription WHERE subtwophasestate NOT IN ('e');";
+  "SELECT count(1) = 0 FROM pg_subscription_db WHERE subtwophasestate NOT IN ('e');";
 $node_B->poll_query_until('postgres', $twophase_query)
   or die "Timed out while waiting for subscriber to enable twophase";
 $node_C->poll_query_until('postgres', $twophase_query)

@@ -97,6 +97,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 #include "catalog/indexing.h"
+#include "catalog/pg_subscription_db.h"
 #include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
@@ -1675,23 +1676,23 @@ HasSubscriptionTablesCached(void)
 }
 
 /*
- * Update the two_phase state of the specified subscription in pg_subscription.
+ * Update the two_phase state of the specified subscription in pg_subscription_db.
  */
 void
 UpdateTwoPhaseState(Oid suboid, char new_state)
 {
 	Relation	rel;
 	HeapTuple	tup;
-	bool		nulls[Natts_pg_subscription];
-	bool		replaces[Natts_pg_subscription];
-	Datum		values[Natts_pg_subscription];
+	bool		nulls[Natts_pg_subscription_db];
+	bool		replaces[Natts_pg_subscription_db];
+	Datum		values[Natts_pg_subscription_db];
 
 	Assert(new_state == LOGICALREP_TWOPHASE_STATE_DISABLED ||
 		   new_state == LOGICALREP_TWOPHASE_STATE_PENDING ||
 		   new_state == LOGICALREP_TWOPHASE_STATE_ENABLED);
 
-	rel = table_open(SubscriptionRelationId, RowExclusiveLock);
-	tup = SearchSysCacheCopy1(SUBSCRIPTIONOID, ObjectIdGetDatum(suboid));
+	rel = table_open(SubscriptionDbRelationId, RowExclusiveLock);
+	tup = SearchSysCacheCopy1(SUBSCRIPTIONDBOID, ObjectIdGetDatum(suboid));
 	if (!HeapTupleIsValid(tup))
 		elog(ERROR,
 			 "cache lookup failed for subscription oid %u",
@@ -1703,8 +1704,8 @@ UpdateTwoPhaseState(Oid suboid, char new_state)
 	memset(replaces, false, sizeof(replaces));
 
 	/* And update/set two_phase state */
-	values[Anum_pg_subscription_subtwophasestate - 1] = CharGetDatum(new_state);
-	replaces[Anum_pg_subscription_subtwophasestate - 1] = true;
+	values[Anum_pg_subscription_db_subtwophasestate - 1] = CharGetDatum(new_state);
+	replaces[Anum_pg_subscription_db_subtwophasestate - 1] = true;
 
 	tup = heap_modify_tuple(tup, RelationGetDescr(rel),
 							values, nulls, replaces);

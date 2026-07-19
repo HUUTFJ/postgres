@@ -21,6 +21,7 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_subscription.h"
+#include "catalog/pg_subscription_db.h"
 #include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_type.h"
 #include "foreign/foreign.h"
@@ -77,7 +78,122 @@ GetPublicationsStr(List *publications, StringInfo dest, bool quote_literal)
 }
 
 /*
- * Fetch the subscription from the syscache.
+ * Helper function to get subscription info per database
+ */
+static void
+GetSubscriptionPerDbInfo(Subscription *sub, Form_pg_subscription subform,
+						 bool conninfo_needed, bool conninfo_aclcheck)
+{
+	HeapTuple	tup;
+	Form_pg_subscription_db subdbform;
+	Datum		datum;
+	bool		isnull;
+	MemoryContext oldcxt;
+
+	tup = SearchSysCache1(SUBSCRIPTIONDBOID, ObjectIdGetDatum(sub->oid));
+
+	Assert(HeapTupleIsValid(tup));
+
+	oldcxt = MemoryContextSwitchTo(sub->cxt);
+
+	subdbform = (Form_pg_subscription_db) GETSTRUCT(tup);
+
+	sub->skiplsn = subdbform->subskiplsn;
+	sub->binary = subdbform->subbinary;
+	sub->stream = subdbform->substream;
+	sub->twophasestate = subdbform->subtwophasestate;
+	sub->disableonerr = subdbform->subdisableonerr;
+	sub->passwordrequired = subdbform->subpasswordrequired;
+	sub->runasowner = subdbform->subrunasowner;
+	sub->failover = subdbform->subfailover;
+	sub->maxretention = subdbform->submaxretention;
+	sub->conflictlogrelid = subdbform->subconflictlogrelid;
+
+	if (conninfo_needed)
+	{
+		if (OidIsValid(subdbform->subserver))
+		{
+			AclResult	aclresult;
+			ForeignServer *server;
+
+			server = GetForeignServer(subdbform->subserver);
+
+			if (conninfo_aclcheck)
+			{
+				/* recheck ACL if requested */
+				aclresult = object_aclcheck(ForeignServerRelationId,
+											subdbform->subserver,
+											subform->subowner, ACL_USAGE);
+
+				if (aclresult != ACLCHECK_OK)
+					ereport(ERROR,
+							(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+							 errmsg("subscription owner \"%s\" does not have permission on foreign server \"%s\"",
+									GetUserNameFromId(subform->subowner, false),
+									server->servername)));
+			}
+
+			sub->conninfo = ForeignServerConnectionString(subform->subowner,
+														  server);
+		}
+		else
+		{
+			datum = SysCacheGetAttrNotNull(SUBSCRIPTIONDBOID,
+										   tup,
+										   Anum_pg_subscription_db_subconninfo);
+			sub->conninfo = TextDatumGetCString(datum);
+		}
+	}
+
+	/* Get slotname */
+	datum = SysCacheGetAttr(SUBSCRIPTIONDBOID,
+							tup,
+							Anum_pg_subscription_db_subslotname,
+							&isnull);
+	if (!isnull)
+		sub->slotname = pstrdup(NameStr(*DatumGetName(datum)));
+	else
+		sub->slotname = NULL;
+
+	/* Get synccommit */
+	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONDBOID,
+								   tup,
+								   Anum_pg_subscription_db_subsynccommit);
+	sub->synccommit = TextDatumGetCString(datum);
+
+	/* Get walrcvtimeout */
+	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONDBOID,
+								   tup,
+								   Anum_pg_subscription_db_subwalrcvtimeout);
+	sub->walrcvtimeout = TextDatumGetCString(datum);
+
+	/* Get publications */
+	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONDBOID,
+								   tup,
+								   Anum_pg_subscription_db_subpublications);
+	sub->publications = textarray_to_stringlist(DatumGetArrayTypeP(datum));
+
+	/* Get origin */
+	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONDBOID,
+								   tup,
+								   Anum_pg_subscription_db_suborigin);
+	sub->origin = TextDatumGetCString(datum);
+
+	/* Get conflict log destination */
+	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONDBOID,
+								   tup,
+								   Anum_pg_subscription_db_subconflictlogdest);
+	sub->conflictlogdest = TextDatumGetCString(datum);
+
+	/* Is the subscription owner a superuser? */
+	sub->ownersuperuser = superuser_arg(sub->owner);
+
+	ReleaseSysCache(tup);
+	MemoryContextSwitchTo(oldcxt);
+}
+
+/*
+ * Fetch the subscription from the shared and per-database syscaches.
  *
  * If conninfo_needed is true, conninfo will be constructed, possibly
  * encountering errors in ForeignServerConnectionString(). Callers not
@@ -91,8 +207,6 @@ GetSubscription(Oid subid, bool missing_ok, bool conninfo_needed,
 	HeapTuple	tup;
 	Subscription *sub;
 	Form_pg_subscription subform;
-	Datum		datum;
-	bool		isnull;
 	MemoryContext cxt;
 	MemoryContext oldcxt;
 
@@ -124,104 +238,16 @@ GetSubscription(Oid subid, bool missing_ok, bool conninfo_needed,
 	sub->cxt = cxt;
 	sub->oid = subid;
 	sub->dbid = subform->subdbid;
-	sub->skiplsn = subform->subskiplsn;
 	sub->name = pstrdup(NameStr(subform->subname));
 	sub->owner = subform->subowner;
 	sub->enabled = subform->subenabled;
-	sub->binary = subform->subbinary;
-	sub->stream = subform->substream;
-	sub->twophasestate = subform->subtwophasestate;
-	sub->disableonerr = subform->subdisableonerr;
-	sub->passwordrequired = subform->subpasswordrequired;
-	sub->runasowner = subform->subrunasowner;
-	sub->failover = subform->subfailover;
 	sub->retaindeadtuples = subform->subretaindeadtuples;
-	sub->maxretention = subform->submaxretention;
 	sub->retentionactive = subform->subretentionactive;
-	sub->conflictlogrelid = subform->subconflictlogrelid;
+	MemoryContextSwitchTo(oldcxt);
 
-	if (conninfo_needed)
-	{
-		if (OidIsValid(subform->subserver))
-		{
-			AclResult	aclresult;
-			ForeignServer *server;
-
-			server = GetForeignServer(subform->subserver);
-
-			if (conninfo_aclcheck)
-			{
-				/* recheck ACL if requested */
-				aclresult = object_aclcheck(ForeignServerRelationId,
-											subform->subserver,
-											subform->subowner, ACL_USAGE);
-
-				if (aclresult != ACLCHECK_OK)
-					ereport(ERROR,
-							(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-							 errmsg("subscription owner \"%s\" does not have permission on foreign server \"%s\"",
-									GetUserNameFromId(subform->subowner, false),
-									server->servername)));
-			}
-
-			sub->conninfo = ForeignServerConnectionString(subform->subowner,
-														  server);
-		}
-		else
-		{
-			datum = SysCacheGetAttrNotNull(SUBSCRIPTIONOID,
-										   tup,
-										   Anum_pg_subscription_subconninfo);
-			sub->conninfo = TextDatumGetCString(datum);
-		}
-	}
-
-	/* Get slotname */
-	datum = SysCacheGetAttr(SUBSCRIPTIONOID,
-							tup,
-							Anum_pg_subscription_subslotname,
-							&isnull);
-	if (!isnull)
-		sub->slotname = pstrdup(NameStr(*DatumGetName(datum)));
-	else
-		sub->slotname = NULL;
-
-	/* Get synccommit */
-	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONOID,
-								   tup,
-								   Anum_pg_subscription_subsynccommit);
-	sub->synccommit = TextDatumGetCString(datum);
-
-	/* Get walrcvtimeout */
-	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONOID,
-								   tup,
-								   Anum_pg_subscription_subwalrcvtimeout);
-	sub->walrcvtimeout = TextDatumGetCString(datum);
-
-	/* Get publications */
-	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONOID,
-								   tup,
-								   Anum_pg_subscription_subpublications);
-	sub->publications = textarray_to_stringlist(DatumGetArrayTypeP(datum));
-
-	/* Get origin */
-	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONOID,
-								   tup,
-								   Anum_pg_subscription_suborigin);
-	sub->origin = TextDatumGetCString(datum);
-
-	/* Get conflict log destination */
-	datum = SysCacheGetAttrNotNull(SUBSCRIPTIONOID,
-								   tup,
-								   Anum_pg_subscription_subconflictlogdest);
-	sub->conflictlogdest = TextDatumGetCString(datum);
-
-	/* Is the subscription owner a superuser? */
-	sub->ownersuperuser = superuser_arg(sub->owner);
+	GetSubscriptionPerDbInfo(sub, subform, conninfo_needed, conninfo_aclcheck);
 
 	ReleaseSysCache(tup);
-
-	MemoryContextSwitchTo(oldcxt);
 
 	return sub;
 }

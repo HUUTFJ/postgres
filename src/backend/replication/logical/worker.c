@@ -107,7 +107,7 @@
  * PUBLICATION which might otherwise be disallowed (see below).
  *
  * If ever a user needs to be aware of the tri-state value, they can fetch it
- * from the pg_subscription catalog (see column subtwophasestate).
+ * from the pg_subscription_db catalog (see column subtwophasestate).
  *
  * Finally, to avoid problems mentioned in previous paragraphs from any
  * subsequent (not READY) tablesyncs (need to toggle two_phase option from 'on'
@@ -257,6 +257,7 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_subscription.h"
+#include "catalog/pg_subscription_db.h"
 #include "catalog/pg_subscription_rel.h"
 #include "commands/subscriptioncmds.h"
 #include "commands/tablecmds.h"
@@ -507,7 +508,7 @@ bool		InitializingApplyWorker = false;
  * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
  * the subscription if the remote transaction's finish LSN matches the subskiplsn.
  * Once we start skipping changes, we don't stop it until we skip all changes of
- * the transaction even if pg_subscription is updated and MySubscription->skiplsn
+ * the transaction even if pg_subscription_db is updated and MySubscription->skiplsn
  * gets changed or reset during that. Also, in streaming transaction cases (streaming = on),
  * we don't skip receiving and spooling the changes since we decide whether or not
  * to skip applying the changes when starting to apply changes. The subskiplsn is
@@ -4916,6 +4917,8 @@ update_retention_status(bool active)
 	/*
 	 * Updating pg_subscription might involve TOAST table access, so ensure we
 	 * have a valid snapshot.
+	 *
+	 * XXX: can we remove?
 	 */
 	PushActiveSnapshot(GetTransactionSnapshot());
 
@@ -5757,7 +5760,7 @@ run_apply_worker(void)
 		StartTransactionCommand();
 
 		/*
-		 * Updating pg_subscription might involve TOAST table access, so
+		 * Updating pg_subscription_db might involve TOAST table access, so
 		 * ensure we have a valid snapshot.
 		 */
 		PushActiveSnapshot(GetTransactionSnapshot());
@@ -5890,6 +5893,9 @@ InitializeLogRepWorker(void)
 	 * role's superuser privilege can be revoked.
 	 */
 	CacheRegisterSyscacheCallback(SUBSCRIPTIONOID,
+								  subscription_change_cb,
+								  (Datum) 0);
+	CacheRegisterSyscacheCallback(SUBSCRIPTIONDBOID,
 								  subscription_change_cb,
 								  (Datum) 0);
 	/* Changes to foreign servers may affect subscriptions using SERVER. */
@@ -6138,7 +6144,7 @@ stop_skipping_changes(void)
 }
 
 /*
- * Clear subskiplsn of pg_subscription catalog.
+ * Clear subskiplsn of pg_subscription_db catalog.
  *
  * finish_lsn is the transaction's finish LSN that is used to check if the
  * subskiplsn matches it. If not matched, we raise a warning when clearing the
@@ -6149,7 +6155,7 @@ static void
 clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 {
 	Relation	rel;
-	Form_pg_subscription subform;
+	Form_pg_subscription_db subform;
 	HeapTuple	tup;
 	XLogRecPtr	myskiplsn = MySubscription->skiplsn;
 	bool		started_tx = false;
@@ -6164,28 +6170,28 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 	}
 
 	/*
-	 * Updating pg_subscription might involve TOAST table access, so ensure we
+	 * Updating pg_subscription_db might involve TOAST table access, so ensure we
 	 * have a valid snapshot.
 	 */
 	PushActiveSnapshot(GetTransactionSnapshot());
 
 	/*
-	 * Protect subskiplsn of pg_subscription from being concurrently updated
+	 * Protect subskiplsn of pg_subscription_db from being concurrently updated
 	 * while clearing it.
 	 */
 	LockSharedObject(SubscriptionRelationId, MySubscription->oid, 0,
 					 AccessShareLock);
 
-	rel = table_open(SubscriptionRelationId, RowExclusiveLock);
+	rel = table_open(SubscriptionDbRelationId, RowExclusiveLock);
 
 	/* Fetch the existing tuple. */
-	tup = SearchSysCacheCopy1(SUBSCRIPTIONOID,
+	tup = SearchSysCacheCopy1(SUBSCRIPTIONDBOID,
 							  ObjectIdGetDatum(MySubscription->oid));
 
 	if (!HeapTupleIsValid(tup))
 		elog(ERROR, "subscription \"%s\" does not exist", MySubscription->name);
 
-	subform = (Form_pg_subscription) GETSTRUCT(tup);
+	subform = (Form_pg_subscription_db) GETSTRUCT(tup);
 
 	/*
 	 * Clear the subskiplsn. If the user has already changed subskiplsn before
@@ -6200,17 +6206,17 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 	 */
 	if (subform->subskiplsn == myskiplsn)
 	{
-		bool		nulls[Natts_pg_subscription];
-		bool		replaces[Natts_pg_subscription];
-		Datum		values[Natts_pg_subscription];
+		bool		nulls[Natts_pg_subscription_db];
+		bool		replaces[Natts_pg_subscription_db];
+		Datum		values[Natts_pg_subscription_db];
 
 		memset(values, 0, sizeof(values));
 		memset(nulls, false, sizeof(nulls));
 		memset(replaces, false, sizeof(replaces));
 
 		/* reset subskiplsn */
-		values[Anum_pg_subscription_subskiplsn - 1] = LSNGetDatum(InvalidXLogRecPtr);
-		replaces[Anum_pg_subscription_subskiplsn - 1] = true;
+		values[Anum_pg_subscription_db_subskiplsn - 1] = LSNGetDatum(InvalidXLogRecPtr);
+		replaces[Anum_pg_subscription_db_subskiplsn - 1] = true;
 
 		tup = heap_modify_tuple(tup, RelationGetDescr(rel), values, nulls,
 								replaces);

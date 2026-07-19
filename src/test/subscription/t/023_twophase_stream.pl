@@ -349,7 +349,7 @@ $node_subscriber->wait_for_subscription_sync($node_publisher, $appname);
 
 # Also wait for two-phase to be enabled
 my $twophase_query =
-  "SELECT count(1) = 0 FROM pg_subscription WHERE subtwophasestate NOT IN ('e');";
+  "SELECT count(1) = 0 FROM pg_subscription_db WHERE subtwophasestate NOT IN ('e');";
 $node_subscriber->poll_query_until('postgres', $twophase_query)
   or die "Timed out while waiting for subscriber to enable twophase";
 

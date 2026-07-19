@@ -37,6 +37,7 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_subscription.h"
+#include "catalog/pg_subscription_db.h"
 #include "catalog/pg_ts_config.h"
 #include "catalog/pg_ts_dict.h"
 #include "catalog/pg_ts_parser.h"
@@ -230,7 +231,9 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 
 		if (classId == SubscriptionRelationId)
 		{
-			Form_pg_subscription form;
+			Form_pg_subscription subform;
+			HeapTuple	tup;
+			Form_pg_subscription_db subdbform;
 
 			/* must have CREATE privilege on database */
 			aclresult = object_aclcheck(DatabaseRelationId, MyDatabaseId,
@@ -239,16 +242,25 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 				aclcheck_error(aclresult, OBJECT_DATABASE,
 							   get_database_name(MyDatabaseId));
 
+			subform = (Form_pg_subscription) GETSTRUCT(oldtup);
+			tup = SearchSysCache1(SUBSCRIPTIONDBOID,
+								  ObjectIdGetDatum(subform->oid));
+			if (!HeapTupleIsValid(tup))
+				elog(ERROR, "cache lookup failed for subscription database data %u",
+					 subform->oid);
+			subdbform = (Form_pg_subscription_db) GETSTRUCT(tup);
+
 			/*
 			 * Don't allow non-superuser modification of a subscription with
 			 * password_required=false.
 			 */
-			form = (Form_pg_subscription) GETSTRUCT(oldtup);
-			if (!form->subpasswordrequired && !superuser())
+			if (!subdbform->subpasswordrequired && !superuser())
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 						 errmsg("password_required=false is superuser-only"),
 						 errhint("Subscriptions with the password_required option set to false may only be created or modified by the superuser.")));
+
+			ReleaseSysCache(tup);
 		}
 	}
 

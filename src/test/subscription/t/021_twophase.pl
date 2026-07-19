@@ -58,7 +58,7 @@ $node_subscriber->wait_for_subscription_sync($node_publisher, $appname);
 
 # Also wait for two-phase to be enabled
 my $twophase_query =
-  "SELECT count(1) = 0 FROM pg_subscription WHERE subtwophasestate NOT IN ('e');";
+  "SELECT count(1) = 0 FROM pg_subscription_db WHERE subtwophasestate NOT IN ('e');";
 $node_subscriber->poll_query_until('postgres', $twophase_query)
   or die "Timed out while waiting for subscriber to enable twophase";
 
@@ -416,7 +416,9 @@ $node_subscriber->wait_for_subscription_sync($node_publisher, $appname_copy);
 
 # Make sure that the two-phase is disabled on the subscriber
 $result = $node_subscriber->safe_psql('postgres',
-	"SELECT subtwophasestate FROM pg_subscription WHERE subname = 'tap_sub_copy';"
+	"SELECT subtwophasestate FROM pg_subscription
+	JOIN pg_subscription_db ON pg_subscription.oid = pg_subscription_db.oid
+	WHERE subname = 'tap_sub_copy';"
 );
 is($result, qq(d), 'two-phase subscription option should be disabled');
 
@@ -475,7 +477,9 @@ is($result, qq(3), 'replicated data in subscriber table');
 
 # Make sure that the two-phase is enabled on the subscriber
 $result = $node_subscriber->safe_psql('postgres',
-	"SELECT subtwophasestate FROM pg_subscription WHERE subname = 'tap_sub_copy';"
+	"SELECT subtwophasestate FROM pg_subscription
+	JOIN pg_subscription_db ON pg_subscription.oid = pg_subscription_db.oid
+	WHERE subname = 'tap_sub_copy';"
 );
 is($result, qq(e), 'two-phase should be enabled');
 
