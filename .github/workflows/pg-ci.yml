@@ -1037,7 +1037,7 @@ jobs:
             }
           }
 
-- name: Upload replication debug artifacts
+      - name: Upload replication debug artifacts
         if: failure() && !cancelled()
         uses: actions/upload-artifact@v4
         with:
