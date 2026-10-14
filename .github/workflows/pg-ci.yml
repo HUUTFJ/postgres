@@ -63,7 +63,7 @@ env:
 
   # Can be set to a non-empty value to run a limited set of tests
   # (e.g. --suite regress to only run the main regression tests).
-  MTEST_TARGET: --slice 1/1 --repeat 50 --num-processes 1 subscription/035_conflicts
+  MTEST_TARGET: subscription/035_conflicts
 
   PGCTLTIMEOUT: 120  # avoids spurious failures during parallel tests
   TEMP_CONFIG: ${{ github.workspace }}/src/tools/ci/pg_ci_base.conf
@@ -1013,16 +1013,39 @@ jobs:
           ninja -C build ${{env.MBUILD_TARGET}} || exit 1
           ninja -C build -t missingdeps
 
-      - name: Test world
-        env:
-          # As described at the top of the task, split the tests across two
-          # runners for performance.  It's not the prettiest to implement this
-          # by prepending to MTEST_TARGET, but a more complicated solution
-          # doesn't seem worth it.
-          MTEST_TARGET: --slice ${{ matrix.slice}}/${{ matrix.num_slices}} ${{env.MTEST_TARGET}}
-          ADDITIONAL_SETUP: |
-            call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
-        run: *meson_test_world_cmd
+      - name: Test replication reconnect
+        shell: pwsh
+        run: |
+          # Prepare the test environment
+          meson test ${{ env.MTEST_ARGS }} --suite setup --logbase setup
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          # Execute sequentially, stopping on failure
+          for ($i = 1; $i -le 50; $i++) {
+            Write-Host "=== Iteration $i / 50 ==="
+
+            meson test ${{ env.MTEST_ARGS }} `
+              --num-processes 1 `
+              --no-suite setup `
+              subscription/035_conflicts
+
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Failed at iteration $i"
+              exit 1
+            }
+          }
+
+- name: Upload replication debug artifacts
+        if: failure() && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replication-debug-${{ github.run_id }}
+          path: |
+            build/testrun/subscription/035_conflicts/**
+            build/meson-logs/**
+          if-no-files-found: warn
 
       - *upload_logs_step
 
