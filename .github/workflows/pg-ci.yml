@@ -63,7 +63,7 @@ env:
 
   # Can be set to a non-empty value to run a limited set of tests
   # (e.g. --suite regress to only run the main regression tests).
-  MTEST_TARGET:
+  MTEST_TARGET: --repeat 8 subscription/035_conflicts
 
   PGCTLTIMEOUT: 120  # avoids spurious failures during parallel tests
   TEMP_CONFIG: ${{ github.workspace }}/src/tools/ci/pg_ci_base.conf
@@ -854,8 +854,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        num_slices: [2]
-        slice: [1, 2]
+        num_slices: [1]
+        slice: [1]
 
     env:
       # Avoid port conflicts between concurrent tap tests

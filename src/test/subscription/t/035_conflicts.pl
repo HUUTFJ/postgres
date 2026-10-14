@@ -506,8 +506,49 @@ if ($injection_points_supported != 0)
 		INSERT INTO tab VALUES(1, 1);
 	));
 
-	$node_B->wait_for_catchup($subname_AB);
-
+	# If the publisher connection does not recover after the restart, log
+	# both sides before failing the test.  Node B publishes to node A.
+	my $caught_up = eval {
+		$node_B->wait_for_catchup($subname_AB);
+		1;
+	};
+	if (!$caught_up)
+	{
+		my $failure = $@;
+		for my $entry (
+			[
+				'node A: subscription workers', $node_A,
+				q{SELECT subname, pid, leader_pid, relid, received_lsn,
+				         latest_end_lsn, latest_end_time
+				  FROM pg_stat_subscription}
+			],
+			[
+				'node A: activity', $node_A,
+				q{SELECT pid, backend_type, state, wait_event_type, wait_event,
+				         application_name
+				  FROM pg_stat_activity
+				  WHERE backend_type LIKE 'logical replication%'}
+			],
+			[
+				'node B: senders', $node_B,
+				q{SELECT pid, application_name, state, sent_lsn, write_lsn,
+				         flush_lsn, replay_lsn
+				  FROM pg_stat_replication}
+			],
+			[
+				'node B: slots', $node_B,
+				q{SELECT slot_name, slot_type, active, active_pid,
+				         restart_lsn, confirmed_flush_lsn
+				  FROM pg_replication_slots}
+			])
+		{
+			my ($description, $node, $query) = @$entry;
+			my ($ret, $stdout, $stderr) = $node->psql('postgres', $query);
+			note("Reconnect diagnostic ($description): exit=$ret\n"
+				  . "stdout:\n$stdout\nstderr:\n$stderr");
+		}
+		die $failure;
+	}
 	# Create the injection_points extension on the publisher node and attach to the
 	# commit-after-delay-checkpoint injection point.
 	$node_B->safe_psql(
