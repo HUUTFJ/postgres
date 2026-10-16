@@ -34,7 +34,7 @@ $node_standby_1->append_conf('postgresql.conf',
 	'max_standby_streaming_delay = 600s');
 $node_standby_1->start;
 
-for (my $i = 0; $i < 100; $i++)
+for (my $i = 0; $i < 1000; $i++)
 {
 $node_primary->restart;
 $node_primary->wait_for_replay_catchup($node_standby_1);
